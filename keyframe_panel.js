@@ -325,13 +325,38 @@
       </div>
     `).join("");
 
+    const GRID_PREVIEW_ROWS = 2; // how many full rows to show before collapsing
+    const TOGGLE_THRESHOLD = 8; // rough cutoff to decide whether a toggle is worth showing at all
+    const needsToggle = works.length > TOGGLE_THRESHOLD;
+    const gridId = `kfl-grid-${uid++}`;
+
+    // Toggle link sits in the header (not below the grid) and stays sticky
+    // while scrolling, so collapsing is always reachable. The exact number
+    // of cards to hide is computed at runtime (see the script at the bottom
+    // of buildResultsPage) since it depends on how many columns actually fit
+    // the screen — that's the only way to guarantee full rows, never a
+    // cropped one.
+    const toggleLink = needsToggle
+      ? `<span class="grid-toggle-link" id="${gridId}-btn" onclick="
+          const el = document.getElementById('${gridId}');
+          el.classList.toggle('expanded');
+          document.getElementById('${gridId}-btn').textContent = el.classList.contains('expanded') ? 'Show less' : 'Show all ${works.length}';
+          window.kflRefreshGridPreviews();
+        ">Show all ${works.length}</span>`
+      : "";
+
     return `
       <div class="person">
-        <div class="person-head">
-          <div class="person-name">${esc(r.nameEn || r.query)}${r.nameJa ? `<span class="ja">${esc(r.nameJa)}</span>` : ""}</div>
-          <div class="badges">${jobs}</div>
+        <div class="person-head person-head-split">
+          <div>
+            <div class="person-name">${esc(r.nameEn || r.query)}${r.nameJa ? `<span class="ja">${esc(r.nameJa)}</span>` : ""}</div>
+            <div class="badges">${jobs}</div>
+          </div>
+          ${toggleLink}
         </div>
-        <div class="work-grid">${cardsHtml || '<div style="padding:16px 22px; color:var(--muted); font-size:13px;">No credits listed.</div>'}</div>
+        <div class="work-grid-wrap${needsToggle ? "" : " expanded"}" id="${gridId}" data-preview-rows="${GRID_PREVIEW_ROWS}">
+          <div class="work-grid">${cardsHtml || '<div style="padding:16px 22px; color:var(--muted); font-size:13px;">No credits listed.</div>'}</div>
+        </div>
       </div>
     `;
   }
@@ -354,7 +379,7 @@
         h1 span { color: var(--amber); }
         .sub { color:var(--muted); font-size:13px; margin-top:2px; }
         main { max-width: 900px; margin:0 auto; padding: 28px 24px 80px; }
-        .person { background:var(--panel); border:1px solid var(--line); border-radius:10px; margin-bottom:20px; overflow:hidden; }
+        .person { background:var(--panel); border:1px solid var(--line); border-radius:10px; margin-bottom:20px; }
         .person-head { padding:18px 22px; border-bottom:1px solid var(--line); }
         .person-name { font-family:'Space Grotesk',sans-serif; font-size:18px; font-weight:700; }
         .person-name .ja { font-family:'Inter',sans-serif; font-weight:400; color:var(--muted); font-size:13px; margin-left:8px; }
@@ -420,6 +445,20 @@
           padding:2px 6px; border-radius:20px; color:var(--muted);
         }
         .grid-role-pill .ep { color:var(--cyan); font-family:'JetBrains Mono',monospace; }
+
+        .person-head-split {
+          display:flex; justify-content:space-between; align-items:flex-start; gap:14px; flex-wrap:wrap;
+          position:sticky; top:0; z-index:5; background:var(--panel); border-radius:10px 10px 0 0;
+        }
+        .grid-toggle-link {
+          font-family:'JetBrains Mono',monospace; font-size:11px; color:var(--amber);
+          cursor:pointer; white-space:nowrap; padding-top:3px; user-select:none;
+        }
+        .grid-toggle-link:hover { text-decoration:underline; }
+
+        /* Cards past the computed preview count are hidden via inline style,
+           set at runtime by the script at the bottom of this page — see
+           kflRefreshGridPreviews(). This guarantees whole rows only. */
       </style>
       <link rel="icon" href="data:image/svg+xml,${encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32"><defs><pattern id="s" width="8" height="8" patternTransform="rotate(45)" patternUnits="userSpaceOnUse"><rect width="8" height="8" fill="#f5a623"/><rect width="4" height="8" fill="#111111"/></pattern></defs><rect width="32" height="32" rx="6" fill="url(#s)"/></svg>')}">
       </head>
@@ -429,7 +468,7 @@
           <div><h1>KEY<span>FRAME</span> RESULTS</h1><div class="sub">${esc(doneMsg)}</div></div>
           <div class="view-toggle">
             <button id="kfl-btn-list" class="active" onclick="document.body.dataset.view='list';document.getElementById('kfl-btn-list').classList.add('active');document.getElementById('kfl-btn-grid').classList.remove('active');">☰ List</button>
-            <button id="kfl-btn-grid" onclick="document.body.dataset.view='grid';document.getElementById('kfl-btn-grid').classList.add('active');document.getElementById('kfl-btn-list').classList.remove('active');">▦ Grid</button>
+            <button id="kfl-btn-grid" onclick="document.body.dataset.view='grid';document.getElementById('kfl-btn-grid').classList.add('active');document.getElementById('kfl-btn-list').classList.remove('active');window.kflRefreshGridPreviews();">▦ Grid</button>
           </div>
         </header>
         <main>
@@ -437,6 +476,38 @@
           <div id="kfl-view-grid">${bodyHtmlGrid}</div>
         </main>
         <footer>Data via <a href="https://keyframe-staff-list.com" target="_blank">KeyFrame Staff List</a></footer>
+        <script>
+          // Hides grid cards past N full rows, where N (rows-per-preview) is
+          // fixed but the column count is measured live -- guarantees the
+          // preview always ends on a complete row regardless of screen width.
+          // Only runs meaningfully while Grid view is actually visible, since
+          // hidden elements can't be measured (offsetTop is always 0).
+          window.kflRefreshGridPreviews = function () {
+            if (document.body.dataset.view !== "grid") return;
+            document.querySelectorAll(".work-grid-wrap").forEach(function (wrap) {
+              var cards = wrap.querySelectorAll(".grid-card");
+              if (!cards.length) return;
+              if (wrap.classList.contains("expanded")) {
+                cards.forEach(function (c) { c.style.display = ""; });
+                return;
+              }
+              var firstTop = cards[0].offsetTop;
+              var columns = 0;
+              for (var i = 0; i < cards.length; i++) {
+                if (cards[i].offsetTop === firstTop) columns++; else break;
+              }
+              if (columns < 1) columns = 1;
+              var rows = parseInt(wrap.dataset.previewRows || "2", 10);
+              var previewCount = columns * rows;
+              cards.forEach(function (c, i) { c.style.display = i < previewCount ? "" : "none"; });
+            });
+          };
+          var kflResizeTimer;
+          window.addEventListener("resize", function () {
+            clearTimeout(kflResizeTimer);
+            kflResizeTimer = setTimeout(window.kflRefreshGridPreviews, 150);
+          });
+        </script>
       </body></html>
     `;
   }
