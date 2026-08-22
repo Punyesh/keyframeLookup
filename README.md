@@ -46,6 +46,7 @@ All data comes from [KeyFrame Staff List](https://keyframe-staff-list.com), buil
 
 ## Changelog
 
-- **Studios shown, not hidden** — studios that show up alongside people in search results are now tagged `[Studio]` in the picker instead of being filtered out or silently causing an error if picked.
+- **Grid view** — a **☰ List** / **▦ Grid** toggle on the results page. Grid view shows one poster card per anime (cover art, title, year) with all of the roles on that work as pills underneath, each showing its episode numbers — alongside the original role-first list view.
+- **Studios** — studios that show up alongside people in search results are now tagged `[Studio]` in the picker instead of being filtered out or silently causing an error if picked.
 - **Cover art + name disambiguation** — each work now shows its cover image; names matching multiple people prompt you to pick one instead of guessing.
 - **Initial release** — bookmarklet/console tool, results grouped by role, JSON export.
