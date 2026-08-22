@@ -1,19 +1,23 @@
 /*
- * KeyFrame Staff List — in-page lookup
+ * KeyFrame Staff List — lookup + credit sheet organizer
  * =========================================================================
- * Paste into your browser's Console (F12 → Console) on keyframe-staff-list.com
- * — or better, use the bookmarklet version so you never need DevTools at all.
- *
- * Enter names, click Run. It fetches everything in the background (shown in
- * the panel's status line). Once done, a "View Results" button appears —
- * click it to open the formatted results in a new window. Tick the JSON
- * checkbox first if you also want a keyframe_results.json file downloaded.
+ * One small draggable panel. A link at the bottom switches it between two
+ * modes:
+ *   - Lookup: enter names, get formatted staff/credit info.
+ *   - Organizer: paste a raw credit sheet, verify every name/studio against
+ *     KeyFrame's live search, and get it organized by role.
+ * Results for the organizer open in a second small side-panel, never a new
+ * tab. Paste into your browser's Console (F12 -> Console) on
+ * keyframe-staff-list.com, or better, use the bookmarklet version.
  */
 
 (() => {
   document.getElementById("kfl-panel")?.remove();
+  document.getElementById("kfl-org-panel")?.remove();
 
-  // ---------- small input panel ----------
+  let kflMode = "lookup"; // "lookup" | "organize"
+
+  // ---------- main panel shell ----------
   const panel = document.createElement("div");
   panel.id = "kfl-panel";
   const initialLeft = Math.max(20, window.innerWidth - 320 - 20);
@@ -23,82 +27,50 @@
     font-size: 13px; border-radius: 10px; box-shadow: 0 8px 30px rgba(0,0,0,.5);
     z-index: 999999; overflow: hidden; border: 1px solid #262b33;
   `;
-  panel.innerHTML = `
-    <div id="kfl-drag-handle" style="padding:10px 14px; background:#7e4ea0; font-weight:600; display:flex; justify-content:space-between; align-items:center; cursor:move; user-select:none;">
-      <span>KeyFrame Lookup</span>
-      <span id="kfl-close" style="cursor:pointer; opacity:.8;">✕</span>
-    </div>
-    <div style="padding:12px 14px; display:flex; flex-direction:column; gap:8px;">
-      <textarea id="kfl-names" placeholder="One name per line, or comma-separated...&#10;Yutaka Nakamura&#10;Norio Matsumoto"
-        style="width:100%; height:70px; resize:vertical; background:#111; color:#eee; border:1px solid #262b33; border-radius:6px; padding:6px; box-sizing:border-box; font-family:inherit;"></textarea>
-      <button id="kfl-run" style="background:#7e4ea0; color:#fff; border:none; border-radius:6px; padding:8px; cursor:pointer; font-weight:600;">
-        Run lookup
-      </button>
-      <div style="display:flex; justify-content:space-between; align-items:center;">
-        <div id="kfl-cache-count" style="font-size:11px; color:#8a8f98;"></div>
-        <span id="kfl-clear-cache" style="font-size:11px; color:#8a8f98; cursor:pointer; text-decoration:underline;">Clear cache</span>
-      </div>
-      <div id="kfl-log" style="font-family:monospace; font-size:11px; color:#8a8f98; max-height:90px; overflow-y:auto; line-height:1.5; white-space:pre-wrap;"></div>
-      <div id="kfl-select" style="display:none; flex-direction:column; gap:6px; background:#111; border:1px solid #262b33; border-radius:6px; padding:8px; max-height:180px; overflow-y:auto;"></div>
-      <div style="display:flex; gap:8px;">
-        <button id="kfl-view" style="display:none; flex:1; background:#4fd1c5; color:#0b0d10; border:none; border-radius:6px; padding:8px; cursor:pointer; font-weight:600;">
-          View Results
-        </button>
-        <button id="kfl-download" style="display:none; flex:1; background:#1c2028; color:#e8e6e1; border:1px solid #262b33; border-radius:6px; padding:8px; cursor:pointer; font-weight:600;">
-          Download JSON
-        </button>
-      </div>
-    </div>
-  `;
   document.body.appendChild(panel);
-  document.getElementById("kfl-close").onclick = () => panel.remove();
 
-  // Drag-to-move
-  (() => {
-    const handle = document.getElementById("kfl-drag-handle");
+  // Reusable drag-to-move, since the panel's innerHTML gets replaced on
+  // every mode switch (wiping old listeners) -- call this again each time.
+  function setupDrag(handleEl, target) {
     let dragging = false, offsetX = 0, offsetY = 0;
-    handle.addEventListener("mousedown", (e) => {
-      if (e.target.id === "kfl-close") return;
+    handleEl.addEventListener("mousedown", (e) => {
+      if (e.target.dataset && e.target.dataset.noDrag) return;
       dragging = true;
-      const rect = panel.getBoundingClientRect();
+      const rect = target.getBoundingClientRect();
       offsetX = e.clientX - rect.left;
       offsetY = e.clientY - rect.top;
       e.preventDefault();
     });
     document.addEventListener("mousemove", (e) => {
       if (!dragging) return;
-      const maxLeft = window.innerWidth - panel.offsetWidth;
+      const maxLeft = window.innerWidth - target.offsetWidth;
       const maxTop = window.innerHeight - 40;
-      panel.style.left = `${Math.min(Math.max(0, e.clientX - offsetX), maxLeft)}px`;
-      panel.style.top = `${Math.min(Math.max(0, e.clientY - offsetY), maxTop)}px`;
+      target.style.left = `${Math.min(Math.max(0, e.clientX - offsetX), maxLeft)}px`;
+      target.style.top = `${Math.min(Math.max(0, e.clientY - offsetY), maxTop)}px`;
     });
     document.addEventListener("mouseup", () => { dragging = false; });
-  })();
+  }
 
-  const log = (msg) => {
-    const el = document.getElementById("kfl-log");
-    el.textContent += (el.textContent ? "\n" : "") + msg;
-    el.scrollTop = el.scrollHeight;
-  };
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-  const DELAY_MS = 3000;
+  const DELAY_MS = 3000; // between lookups, per KeyFrame's scraping policy
+  const VERIFY_DELAY_MS = 1000; // lighter delay for the organizer's search-only calls
 
-  // Cache of already-fetched results, keyed by normalized name. Persists
-  // for as long as this panel stays open, so adding a name to the list and
-  // re-running won't re-fetch names you already have. Re-opening the panel
-  // (clicking the bookmarklet again) starts a fresh cache.
+  // Cache of already-fetched lookup results, keyed by normalized name.
+  // Persists for as long as this panel stays open.
   const cache = {};
   const cacheKey = (name) => name.trim().toLowerCase();
 
-  const updateCacheCount = () => {
-    const n = Object.keys(cache).length;
-    document.getElementById("kfl-cache-count").textContent = n > 0 ? `${n} cached` : "";
+  const log = (msg) => {
+    const el = document.getElementById("kfl-log");
+    if (!el) return;
+    el.textContent += (el.textContent ? "\n" : "") + msg;
+    el.scrollTop = el.scrollHeight;
   };
-
-  document.getElementById("kfl-clear-cache").onclick = () => {
-    for (const k in cache) delete cache[k];
-    updateCacheCount();
-    log("Cache cleared.");
+  const updateCacheCount = () => {
+    const el = document.getElementById("kfl-cache-count");
+    if (!el) return;
+    const n = Object.keys(cache).length;
+    el.textContent = n > 0 ? `${n} cached` : "";
   };
 
   function esc(s) {
@@ -251,11 +223,21 @@
       return { query: name, found: false, error: "That match is a studio, not a staff member — studio profiles aren't supported by this tool", allSearchMatches: allMatches };
     }
 
-    if (chosen.anilist_id == null) return { query: name, found: false, error: "Chosen match had no id", allSearchMatches: allMatches };
+    // Staff not linked to an AniList entry have anilist_id: null. The site
+    // falls back to addressing them by name instead — id=ja:<name> or
+    // id=en:<name> (confirmed via captured request: show.php?id=en:Christina).
+    // Only the name portion gets percent-encoded; the "ja:"/"en:" prefix and
+    // colon stay literal.
+    let staffId = chosen.anilist_id;
+    if (staffId == null) {
+      if (chosen.ja) staffId = "ja:" + encodeURIComponent(chosen.ja);
+      else if (chosen.en) staffId = "en:" + encodeURIComponent(chosen.en);
+    }
 
-    return fetchProfile(name, chosen.anilist_id, allMatches);
+    if (staffId == null) return { query: name, found: false, error: "Chosen match had no id or name to look up", allSearchMatches: allMatches };
+
+    return fetchProfile(name, staffId, allMatches);
   }
-
   // ---------- results page builder ----------
   let uid = 0;
   function renderPerson(r) {
@@ -365,6 +347,9 @@
     const doneMsg = `${results.filter((r) => r.found).length}/${results.length} found`;
     const bodyHtmlList = results.map(renderPerson).join("");
     const bodyHtmlGrid = results.map(renderPersonGrid).join("");
+    // Escape '<' so a "</script" sequence inside any bio/title text can't
+    // break out of the embedded JSON script tag below.
+    const rawDataJson = JSON.stringify(results).replace(/</g, "\\u003c");
     return `
       <!DOCTYPE html><html><head><meta charset="UTF-8"><title>KeyFrame Lookup — Results</title>
       <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -469,6 +454,7 @@
           <div class="view-toggle">
             <button id="kfl-btn-list" class="active" onclick="document.body.dataset.view='list';document.getElementById('kfl-btn-list').classList.add('active');document.getElementById('kfl-btn-grid').classList.remove('active');">☰ List</button>
             <button id="kfl-btn-grid" onclick="document.body.dataset.view='grid';document.getElementById('kfl-btn-grid').classList.add('active');document.getElementById('kfl-btn-list').classList.remove('active');window.kflRefreshGridPreviews();">▦ Grid</button>
+            <button id="kfl-copy-md" onclick="window.kflCopyMarkdown();">📋 Copy Markdown</button>
           </div>
         </header>
         <main>
@@ -476,6 +462,7 @@
           <div id="kfl-view-grid">${bodyHtmlGrid}</div>
         </main>
         <footer>Data via <a href="https://keyframe-staff-list.com" target="_blank">KeyFrame Staff List</a></footer>
+        <script type="application/json" id="kfl-raw-data">${rawDataJson}</script>
         <script>
           // Hides grid cards past N full rows, where N (rows-per-preview) is
           // fixed but the column count is measured live -- guarantees the
@@ -507,6 +494,64 @@
             clearTimeout(kflResizeTimer);
             kflResizeTimer = setTimeout(window.kflRefreshGridPreviews, 150);
           });
+
+          function kflEsc(s) { return s == null ? "" : String(s); }
+
+          // Discord's Markdown subset has no headers (# / ##) -- bold/italic/
+          // lists only. Using __**bold underline**__ for the top-level name
+          // so it stands out from role labels below it.
+          window.kflBuildMarkdown = function (results) {
+            var lines = [];
+            results.forEach(function (r) {
+              if (!r.found) {
+                lines.push("__**" + kflEsc(r.query) + "**__ — not found (" + kflEsc(r.error || "") + ")");
+                lines.push("");
+                return;
+              }
+              lines.push("__**" + kflEsc(r.nameEn || r.query) + "**__" + (r.nameJa ? " (" + kflEsc(r.nameJa) + ")" : ""));
+              if (r.jobs && r.jobs.length) lines.push("*Jobs:* " + r.jobs.join(", "));
+              lines.push("");
+
+              var roleNames = Object.keys(r.roles || {}).sort(function (a, b) {
+                return r.roles[b].length - r.roles[a].length;
+              });
+              roleNames.forEach(function (roleName) {
+                var works = r.roles[roleName];
+                lines.push("**" + kflEsc(roleName) + "** (" + works.length + ")");
+                works.forEach(function (w) {
+                  var eps = w.episodes && w.episodes.length ? " — " + w.episodes.join(", ") : "";
+                  lines.push("- " + kflEsc(w.work || w.slug) + " (" + kflEsc(w.year ?? "—") + ")" + eps);
+                });
+                lines.push("");
+              });
+            });
+            lines.push("_Data via KeyFrame Staff List (keyframe-staff-list.com)_");
+            return lines.join("\\n");
+          };
+
+          window.kflCopyMarkdown = function () {
+            var raw = JSON.parse(document.getElementById("kfl-raw-data").textContent);
+            var md = window.kflBuildMarkdown(raw);
+            navigator.clipboard.writeText(md).catch(function () {});
+
+            document.getElementById("kfl-md-modal")?.remove();
+            var overlay = document.createElement("div");
+            overlay.id = "kfl-md-modal";
+            overlay.style.cssText = "position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:999999;display:flex;align-items:center;justify-content:center;padding:24px;";
+            overlay.innerHTML =
+              '<div style="background:var(--panel);border:1px solid var(--line);border-radius:10px;max-width:640px;width:100%;max-height:80vh;display:flex;flex-direction:column;overflow:hidden;">' +
+                '<div style="padding:14px 18px;border-bottom:1px solid var(--line);display:flex;justify-content:space-between;align-items:center;">' +
+                  '<strong style="font-family:Space Grotesk,sans-serif;">Copied to clipboard — formatted for Discord</strong>' +
+                  '<span style="cursor:pointer;color:var(--muted);" onclick="document.getElementById(\\\'kfl-md-modal\\\').remove()">✕</span>' +
+                "</div>" +
+                '<textarea readonly style="flex:1;min-height:320px;background:#111;color:var(--text);border:none;padding:16px;font-family:JetBrains Mono,monospace;font-size:12px;line-height:1.6;resize:none;box-sizing:border-box;"></textarea>' +
+              "</div>";
+            document.body.appendChild(overlay);
+            var ta = overlay.querySelector("textarea");
+            ta.value = md;
+            ta.focus();
+            ta.select();
+          };
         </script>
       </body></html>
     `;
@@ -514,72 +559,810 @@
 
   let lastResults = null;
 
-  document.getElementById("kfl-view").onclick = () => {
-    if (!lastResults) return;
-    const win = window.open("", "_blank");
-    if (!win) { log("Popup blocked — allow popups for this site and try again."); return; }
-    win.document.write(buildResultsPage(lastResults));
-    win.document.close();
+  // =========================================================================
+  // Credit sheet organizer logic
+  // =========================================================================
+  // Takes messy raw credit-sheet text (role headers, studio names, and
+  // names -- sometimes multiple per line), splits it into candidate tokens,
+  // then verifies every name/studio live against KeyFrame's own search API.
+  // Studio-vs-person is resolved via the API's own is_studio flag rather
+  // than guessing from text shape.
+
+  var ROLE_MAP = {
+    // Directing
+    "総監督": "Chief Director", "chief director": "Chief Director", "general director": "Chief Director",
+    "監督": "Director", "director": "Director",
+    "副監督": "Assistant Director", "助監督": "Assistant Director", "assistant director": "Assistant Director", "vice director": "Assistant Director",
+    "各話演出": "Episode Director", "episode director": "Episode Director",
+    "演出": "Unit Director", "unit director": "Unit Director",
+    "演出補佐": "Assistant Episode Director", "assistant episode director": "Assistant Episode Director", "assistant unit director": "Assistant Episode Director",
+    "チーフ演出": "Chief Episode Director", "chief episode director": "Chief Episode Director",
+    "シリーズディレクター": "Series Director", "series director": "Series Director",
+    // Writing
+    "脚本": "Script", "script": "Script", "screenplay": "Script",
+    "シリーズ構成": "Series Composition", "series composition": "Series Composition",
+    "脚本協力": "Script Cooperation", "script cooperation": "Script Cooperation",
+    "脚本監修": "Script Supervision", "script supervision": "Script Supervision", "script supervisor": "Script Supervision",
+    // Storyboard
+    "コンテ": "Storyboard", "絵コンテ": "Storyboard", "storyboard": "Storyboard", "storyboarder": "Storyboard",
+    "コンテ協力": "Storyboard Cooperation", "絵コンテ協力": "Storyboard Cooperation", "storyboard cooperation": "Storyboard Cooperation",
+    // Animation direction
+    "総作画監督": "Chief Animation Director", "chief animation director": "Chief Animation Director", "general animation director": "Chief Animation Director",
+    "総作画監督補佐": "Assistant Chief Animation Director", "assistant chief animation director": "Assistant Chief Animation Director",
+    "作画監督": "Animation Director", "animation director": "Animation Director",
+    "作画監督補佐": "Assistant Animation Director", "assistant animation director": "Assistant Animation Director",
+    "作画監督協力": "Animation Direction Cooperation", "animation direction cooperation": "Animation Direction Cooperation",
+    "作画監督補正": "Animation Direction Correction",
+    "キャラクター作画監督": "Character Animation Director", "character animation director": "Character Animation Director",
+    "アクション作画監督": "Action Animation Director", "action animation director": "Action Animation Director",
+    "メカ作画監督": "Mecha Animation Director", "メカニック作画監督": "Mechanical Animation Director",
+    "mecha animation director": "Mecha Animation Director", "mechanical animation director": "Mechanical Animation Director",
+    // Key / in-between animation
+    "第一原画": "1st Key Animation", "1st key animation": "1st Key Animation",
+    "第二原画": "2nd Key Animation", "2nd key animation": "2nd Key Animation",
+    "原画": "Key Animation", "key animation": "Key Animation",
+    "原画協力": "Key Animation Cooperation", "key animation cooperation": "Key Animation Cooperation",
+    "動画": "In-Between Animation", "in-between animation": "In-Between Animation",
+    "動画検査": "In-Between Check", "動画チェック": "In-Between Check", "in-between check": "In-Between Check", "in-between animation check": "In-Between Check",
+    "動画協力": "In-Between Cooperation", "in-between cooperation": "In-Between Cooperation",
+    // Design
+    "キャラクターデザイン": "Character Design", "character design": "Character Design",
+    "サブキャラクターデザイン": "Sub Character Design", "sub character design": "Sub Character Design",
+    "ゲストキャラデザイン": "Guest Character Design", "guest character design": "Guest Character Design",
+    "メカニックデザイン": "Mechanical Design", "mechanical design": "Mechanical Design",
+    "メカデザイン": "Mecha Design", "mecha design": "Mecha Design",
+    "プロップデザイン": "Prop Design", "prop design": "Prop Design",
+    "モンスターデザイン": "Monster Design", "monster design": "Monster Design",
+    "美術設定": "Art Setting", "art setting": "Art Setting",
+    "総設定": "General Setting", "general setting": "General Setting",
+    "設定": "Setting", "setting": "Setting",
+    // Art / background
+    "美術監督": "Art Director", "art director": "Art Director",
+    "美術監督補佐": "Assistant Art Director", "assistant art director": "Assistant Art Director",
+    "美術": "Art", "art": "Art",
+    "背景": "Background", "background": "Background",
+    "美術ボード": "Art Board", "art board": "Art Board",
+    // Color
+    "色彩設計": "Color Design", "color design": "Color Design",
+    "色彩設計補佐": "Assistant Color Design", "assistant color design": "Assistant Color Design",
+    "色指定": "Color Specification", "color specification": "Color Specification",
+    "色彩": "Color", "color": "Color",
+    // Photography / CG
+    "撮影監督": "Director of Photography", "director of photography": "Director of Photography",
+    "撮影": "Photography", "photography": "Photography",
+    "撮影協力": "Photography Cooperation", "photography cooperation": "Photography Cooperation",
+    "CGディレクター": "CG Director", "cg director": "CG Director",
+    "3DCG監督": "3DCG Director", "3dcg director": "3DCG Director",
+    "3DCG": "3DCG", "3dcg": "3DCG",
+    // Editing
+    "編集": "Editing", "editing": "Editing",
+    "編集助手": "Assistant Editor", "assistant editor": "Assistant Editor",
+    // Sound
+    "音響監督": "Sound Director", "sound director": "Sound Director",
+    "音響効果": "Sound Effects", "sound effects": "Sound Effects",
+    "音響制作": "Sound Production", "sound production": "Sound Production",
+    "録音": "Recording", "recording": "Recording",
+    "整音": "Sound Mixing", "sound mixing": "Sound Mixing",
+    // Music
+    "音楽": "Music", "music": "Music",
+    "音楽プロデューサー": "Music Producer", "music producer": "Music Producer",
+    "主題歌": "Theme Song", "theme song": "Theme Song",
+    // Production
+    "プロデューサー": "Producer", "producer": "Producer",
+    "アニメーションプロデューサー": "Animation Producer", "animation producer": "Animation Producer",
+    "アシスタントプロデューサー": "Assistant Producer", "assistant producer": "Assistant Producer",
+    "制作": "Production", "production": "Production",
+    "制作進行": "Production Coordinator", "production assistant": "Production Coordinator", "production coordinator": "Production Coordinator",
+    "制作デスク": "Production Desk", "production desk": "Production Desk",
+    "制作協力": "Production Cooperation", "production cooperation": "Production Cooperation",
+    "進行": "Progress", "progress": "Progress",
+    // Finishing
+    "仕上げ": "Finishing", "finishing": "Finishing", "ink and paint": "Finishing",
+    "仕上げ検査": "Finish Check", "finish check": "Finish Check",
+    "検査": "Inspection", "inspection": "Inspection", "check": "Inspection",
+    // Misc
+    "タイムシート": "Timesheet", "timesheet": "Timesheet",
   };
 
-  document.getElementById("kfl-download").onclick = () => {
-    if (!lastResults) return;
-    const blob = new Blob([JSON.stringify(lastResults, null, 2)], { type: "application/json" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = "keyframe_results.json";
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
-  };
+  function kflNorm(s) { return (s || "").trim().toLowerCase().replace(/\s+/g, ""); }
+  const ROLE_SET = {};
+  Object.keys(ROLE_MAP).forEach((k) => { ROLE_SET[kflNorm(k)] = ROLE_MAP[k]; });
+  function isRoleHeader(line) { return !!ROLE_SET[kflNorm(line)]; }
+  function roleLabel(line) { return ROLE_SET[kflNorm(line)] || line; }
 
-  document.getElementById("kfl-run").onclick = async () => {
-    const names = document.getElementById("kfl-names").value
-      .split(/[\n,]/).map((s) => s.trim()).filter(Boolean);
-    if (names.length === 0) { log("Enter at least one name."); return; }
-
-    document.getElementById("kfl-log").textContent = "";
-    document.getElementById("kfl-run").disabled = true;
-    document.getElementById("kfl-view").style.display = "none";
-    document.getElementById("kfl-download").style.display = "none";
-    lastResults = null;
-
-    const results = [];
-    for (let i = 0; i < names.length; i++) {
-      const name = names[i];
-      const key = cacheKey(name);
-
-      if (cache[key]) {
-        log(`${name}: using cached result`);
-        results.push(cache[key]);
-        continue;
+  function parseCreditSheet(raw) {
+    const lines = raw.split("\n").map((l) => l.trim()).filter(Boolean);
+    const tokens = [];
+    let currentRole = null;
+    lines.forEach((line) => {
+      if (isRoleHeader(line)) {
+        currentRole = roleLabel(line);
+        tokens.push({ kind: "role", text: currentRole });
+        return;
       }
+      const parts = line.split(/\s{2,}/).map((p) => p.trim()).filter(Boolean);
+      parts.forEach((part) => {
+        tokens.push({ kind: "candidate", text: part, role: currentRole });
+      });
+    });
+    return tokens;
+  }
 
-      log(`Looking up: ${name} ...`);
+  // Exact text match on either name -> unambiguous (studio or person).
+  // No exact match but exactly one non-studio candidate -> treat as a likely
+  // spelling variant (resolved automatically, English name preferred).
+  // No exact match but 2+ non-studio candidates -> genuinely ambiguous,
+  // needs the user to pick (see promptForOrgMatch).
+  function classifyMatch(candidateText, matches) {
+    const norm = (s) => (s || "").trim();
+    const candidateNorm = norm(candidateText);
+
+    for (const m of matches) {
+      if (m.is_studio && (norm(m.en) === candidateNorm || norm(m.ja) === candidateNorm)) {
+        return { verdict: "studio", match: m };
+      }
+    }
+    for (const m of matches) {
+      if (!m.is_studio && (norm(m.en) === candidateNorm || norm(m.ja) === candidateNorm)) {
+        return { verdict: "person-exact", match: m };
+      }
+    }
+    const candidates = matches.filter((m) => !m.is_studio);
+    if (candidates.length === 0) return { verdict: "not-found", match: null };
+    if (candidates.length === 1) return { verdict: "person-diff", match: candidates[0] };
+    return { verdict: "ambiguous", candidates };
+  }
+
+  // Shows candidate buttons inside the small panel (organize mode) and
+  // resolves with the chosen match, or null if "keep as typed" is clicked.
+  // Pauses the verify loop until answered -- same pattern as the lookup
+  // mode's promptForMatch, just targeting the organizer's own box.
+  function promptForOrgMatch(name, matches) {
+    return new Promise((resolve) => {
+      const box = document.getElementById("org-select");
+      box.style.display = "flex";
+      box.innerHTML = `<div style="color:#8a8f98; font-size:11.5px; margin-bottom:2px;">Multiple matches for "${esc(name)}" — pick one:</div>`;
+
+      matches.forEach((m) => {
+        const btn = document.createElement("button");
+        const jobsPreview = (m.jobs || []).slice(0, 2).join(", ");
+        btn.textContent = `${m.en || m.ja || "Unnamed"}${m.ja ? ` (${m.ja})` : ""}${jobsPreview ? ` — ${jobsPreview}` : ""}`;
+        btn.style.cssText = "text-align:left; background:#1c2028; color:#e8e6e1; border:1px solid #262b33; border-radius:6px; padding:6px 8px; cursor:pointer; font-size:11.5px;";
+        btn.onclick = () => { box.style.display = "none"; box.innerHTML = ""; resolve(m); };
+        box.appendChild(btn);
+      });
+
+      const keepBtn = document.createElement("button");
+      keepBtn.textContent = `Keep as typed: "${name}"`;
+      keepBtn.style.cssText = "background:#2a1414; color:#f2a; border:1px solid #4a1f1f; border-radius:6px; padding:6px 8px; cursor:pointer; font-size:11.5px;";
+      keepBtn.onclick = () => { box.style.display = "none"; box.innerHTML = ""; resolve(null); };
+      box.appendChild(keepBtn);
+    });
+  }
+
+  // When a candidate comes back not-found as a whole, it might actually be
+  // two people accidentally joined by a single space (looks identical to a
+  // real "Firstname Lastname" in plain text -- there's no way to tell them
+  // apart from shape alone, e.g. "yaya Christine" vs "Kartik Sharma"). Check
+  // whether each half independently exists on KeyFrame before ever
+  // suggesting a split, so this only fires on real evidence.
+  async function trySplitFallback(text) {
+    const parts = text.trim().split(/\s+/);
+    if (parts.length !== 2) return null;
+    const [partA, partB] = parts;
+    let resA, resB;
+    try {
+      [resA, resB] = await Promise.all([
+        fetch(`/api/search/?q=${encodeURIComponent(partA)}&type=all`, { credentials: "include" }).then((r) => (r.ok ? r.json() : null)),
+        fetch(`/api/search/?q=${encodeURIComponent(partB)}&type=all`, { credentials: "include" }).then((r) => (r.ok ? r.json() : null)),
+      ]);
+    } catch (e) {
+      return null;
+    }
+    const matchesA = (resA && resA.staff) || [];
+    const matchesB = (resB && resB.staff) || [];
+    if (matchesA.length === 0 || matchesB.length === 0) return null;
+    return { partA, partB, matchesA, matchesB };
+  }
+
+  function promptSplitConfirm(original, partA, partB) {
+    return new Promise((resolve) => {
+      const box = document.getElementById("org-select");
+      box.style.display = "flex";
+      box.innerHTML = `<div style="color:#8a8f98; font-size:11.5px; margin-bottom:2px;">"${esc(original)}" wasn't found as one entry, but "${esc(partA)}" and "${esc(partB)}" both exist separately — split into two people?</div>`;
+
+      const splitBtn = document.createElement("button");
+      splitBtn.textContent = `Split into "${partA}" + "${partB}"`;
+      splitBtn.style.cssText = "text-align:left; background:#1c2028; color:#89c37a; border:1px solid #2a3a26; border-radius:6px; padding:6px 8px; cursor:pointer; font-size:11.5px;";
+      splitBtn.onclick = () => { box.style.display = "none"; box.innerHTML = ""; resolve(true); };
+      box.appendChild(splitBtn);
+
+      const keepBtn = document.createElement("button");
+      keepBtn.textContent = `Keep as one: "${original}" (not found)`;
+      keepBtn.style.cssText = "background:#2a1414; color:#f2a; border:1px solid #4a1f1f; border-radius:6px; padding:6px 8px; cursor:pointer; font-size:11.5px;";
+      keepBtn.onclick = () => { box.style.display = "none"; box.innerHTML = ""; resolve(false); };
+      box.appendChild(keepBtn);
+    });
+  }
+
+  // Resolution for one half of a confirmed split. If that half is itself
+  // unambiguous, resolves directly; if it's ambiguous too (e.g. multiple
+  // "Christine"s), shows the same picker as the normal flow rather than
+  // silently guessing the first match.
+  async function resolveSplitHalf(text, role, matches) {
+    const cls = classifyMatch(text, matches);
+    if (cls.verdict === "studio" || cls.verdict === "person-exact" || cls.verdict === "person-diff") {
+      return { kind: "candidate", text, role, verdict: cls.verdict, match: cls.match };
+    }
+    if (cls.verdict === "ambiguous") {
+      const chosen = await promptForOrgMatch(text, cls.candidates);
+      return {
+        kind: "candidate", text, role,
+        verdict: chosen ? "person-diff" : "not-found",
+        match: chosen,
+      };
+    }
+    return { kind: "candidate", text, role, verdict: "not-found", match: null };
+  }
+
+  async function verifyTokens(tokens, onProgress) {
+    const out = [];
+    const candidates = tokens.filter((t) => t.kind === "candidate");
+    let done = 0;
+    for (let i = 0; i < tokens.length; i++) {
+      const t = tokens[i];
+      if (t.kind === "role") { out.push(t); continue; }
+      done++;
+      onProgress(done, candidates.length, t.text);
       try {
-        const res = await lookupName(name);
-        results.push(res);
-        cache[key] = res;
-        updateCacheCount();
-        log(res.found ? `  -> OK` : `  -> FAILED (${res.error})`);
+        const res = await fetch(`/api/search/?q=${encodeURIComponent(t.text)}&type=all`, { credentials: "include" });
+        const body = res.ok ? await res.json() : null;
+        const matches = (body && body.staff) || [];
+        const cls = classifyMatch(t.text, matches);
+
+        if (cls.verdict === "ambiguous") {
+          onProgress(done, candidates.length, `${t.text} — pick a match in the panel...`);
+          const chosen = await promptForOrgMatch(t.text, cls.candidates);
+          out.push({
+            kind: "candidate", text: t.text, role: t.role,
+            verdict: chosen ? "person-diff" : "not-found",
+            match: chosen,
+          });
+        } else if (cls.verdict === "not-found") {
+          const splitInfo = await trySplitFallback(t.text);
+          if (splitInfo) {
+            onProgress(done, candidates.length, `${t.text} — possible split found, confirm in panel...`);
+            const doSplit = await promptSplitConfirm(t.text, splitInfo.partA, splitInfo.partB);
+            if (doSplit) {
+              out.push(await resolveSplitHalf(splitInfo.partA, t.role, splitInfo.matchesA));
+              out.push(await resolveSplitHalf(splitInfo.partB, t.role, splitInfo.matchesB));
+            } else {
+              out.push({ kind: "candidate", text: t.text, role: t.role, verdict: "not-found", match: null });
+            }
+          } else {
+            out.push({ kind: "candidate", text: t.text, role: t.role, verdict: "not-found", match: null });
+          }
+        } else {
+          out.push({ kind: "candidate", text: t.text, role: t.role, verdict: cls.verdict, match: cls.match });
+        }
       } catch (e) {
-        const failed = { query: name, found: false, error: String(e) };
-        results.push(failed);
-        cache[key] = failed;
-        updateCacheCount();
-        log(`  -> ERROR: ${e}`);
+        out.push({ kind: "candidate", text: t.text, role: t.role, verdict: "error", match: null });
       }
-      // Only delay after an actual network fetch, not after a cache hit.
-      if (i < names.length - 1) await sleep(DELAY_MS);
+      if (i < tokens.length - 1) await sleep(VERIFY_DELAY_MS);
+    }
+    return out;
+  }
+
+  function reconstruct(verifiedTokens) {
+    const roles = [];
+    let currentRoleObj = null;
+    let currentGroup = null;
+
+    function ensureGroup() {
+      if (!currentGroup) {
+        currentGroup = { studio: null, people: [] };
+        currentRoleObj.groups.push(currentGroup);
+      }
+      return currentGroup;
     }
 
-    lastResults = results;
-    log(`Done — ${results.filter((r) => r.found).length}/${results.length} found.`);
-    document.getElementById("kfl-run").disabled = false;
-    document.getElementById("kfl-view").style.display = "block";
-    document.getElementById("kfl-download").style.display = "block";
-  };
+    verifiedTokens.forEach((t) => {
+      if (t.kind === "role") {
+        currentRoleObj = { role: t.text, groups: [] };
+        roles.push(currentRoleObj);
+        currentGroup = null;
+        return;
+      }
+      if (!currentRoleObj) {
+        currentRoleObj = { role: "Unlabeled", groups: [] };
+        roles.push(currentRoleObj);
+        currentGroup = null;
+      }
+      if (t.verdict === "studio") {
+        const studioName = t.match ? (t.match.en || t.match.ja || t.text) : t.text;
+        currentGroup = { studio: studioName, people: [] };
+        currentRoleObj.groups.push(currentGroup);
+        return;
+      }
+      const group = ensureGroup();
+      const official = t.match ? (t.match.en || t.match.ja || null) : null;
+      group.people.push({
+        original: t.text,
+        verdict: t.verdict,
+        official: official,
+        chosen: official ? "official" : "original",
+      });
+    });
+    return roles;
+  }
 
-  log("Ready. Enter names above and click Run.");
+  // Matches the style of well-established credit-sheet posts: a plain
+  // "Role: Name, Name" line when a role has just one group, or "Role:" on
+  // its own line followed by blank-line-separated studio blocks when a
+  // role spans multiple studios/groups. Minimal decoration -- no emoji,
+  // no per-name flags beyond a trailing "?" for not-found.
+  function buildOrgMarkdown(roles) {
+    const lines = [];
+
+    function nameListFor(group) {
+      return group.people
+        .map((p) => {
+          const name = p.chosen === "official" && p.official ? p.official : p.original;
+          return p.verdict === "not-found" ? `${name}?` : name;
+        })
+        .join(", ");
+    }
+
+    roles.forEach((roleObj) => {
+      const groups = roleObj.groups.filter((g) => g.people.length > 0);
+      if (groups.length === 0) return;
+
+      if (groups.length === 1) {
+        const g = groups[0];
+        const studioLabel = g.studio ? ` (${g.studio})` : "";
+        lines.push(`**${roleObj.role}**${studioLabel}: ${nameListFor(g)}`);
+        lines.push("");
+      } else {
+        lines.push(`**${roleObj.role}:**`);
+        groups.forEach((g) => {
+          if (g.studio) lines.push(g.studio);
+          lines.push(nameListFor(g));
+          lines.push("");
+        });
+      }
+    });
+
+    // trim the trailing blank line
+    while (lines.length && lines[lines.length - 1] === "") lines.pop();
+    return lines.join("\n");
+  }
+
+  // Full standalone HTML document -- real, selectable DOM (not a rasterized
+  // image). Used by "View as Page" (opens in a new tab) and "Download HTML"
+  // (saves as a portable file you can host, embed, or attach anywhere).
+  function buildSharePage(roles) {
+    let body = "";
+    roles.forEach((roleObj) => {
+      const hasContent = roleObj.groups.some((g) => g.people.length > 0);
+      if (!hasContent) return;
+      body += `<div class="role-block"><div class="role-name">${esc(roleObj.role)}</div>`;
+      roleObj.groups.forEach((g) => {
+        if (g.people.length === 0) return;
+        if (g.studio) body += `<div class="studio-label">🏢 ${esc(g.studio)}</div>`;
+        body += `<div class="chip-row">`;
+        g.people.forEach((p) => {
+          const name = p.chosen === "official" && p.official ? p.official : p.original;
+          const notFound = p.verdict === "not-found";
+          body += `<span class="chip${notFound ? " not-found" : ""}">${esc(name)}${notFound ? ' <span class="q">?</span>' : ""}</span>`;
+        });
+        body += `</div>`;
+      });
+      body += `</div>`;
+    });
+
+    return `<!DOCTYPE html><html><head><meta charset="UTF-8"><title>Credit Sheet</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="icon" href="data:image/svg+xml,${encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32"><defs><pattern id="s" width="8" height="8" patternTransform="rotate(45)" patternUnits="userSpaceOnUse"><rect width="8" height="8" fill="#f5a623"/><rect width="4" height="8" fill="#111111"/></pattern></defs><rect width="32" height="32" rx="6" fill="url(#s)"/></svg>')}">
+<style>
+:root{--bg:#0b0d10;--panel:#15181d;--line:#262b33;--text:#e8e6e1;--muted:#8a8f98;--amber:#f5a623;--cyan:#4fd1c5;--red:#e06c75;}
+*{box-sizing:border-box;}
+body{margin:0;background:var(--bg);color:var(--text);font-family:Inter,sans-serif;min-height:100vh;}
+.wrap{max-width:760px;margin:0 auto;padding:40px 24px 60px;}
+.header{display:flex;align-items:center;gap:14px;margin-bottom:28px;padding-bottom:20px;border-bottom:1px solid var(--line);}
+.mark{width:32px;height:32px;background:repeating-linear-gradient(45deg,var(--amber),var(--amber) 6px,#111 6px,#111 12px);border-radius:5px;flex-shrink:0;}
+.title{font-family:Space Grotesk,sans-serif;font-weight:700;font-size:22px;}
+.role-block{margin-bottom:24px;}
+.role-name{font-family:Space Grotesk,sans-serif;font-weight:700;font-size:15px;color:var(--amber);margin-bottom:10px;}
+.studio-label{font-family:JetBrains Mono,monospace;font-size:11.5px;color:var(--cyan);margin:10px 0 6px;}
+.chip-row{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:4px;}
+.chip{background:var(--panel);border:1px solid var(--line);border-radius:6px;padding:6px 12px;font-size:13px;}
+.chip.not-found{opacity:.6;}
+.chip .q{color:var(--red);font-size:10px;}
+.footer{margin-top:24px;padding-top:16px;border-top:1px solid var(--line);font-family:JetBrains Mono,monospace;font-size:11px;color:var(--muted);}
+.footer a{color:var(--amber);}
+</style></head><body>
+<div class="wrap">
+<div class="header"><div class="mark"></div><div class="title">Credit Sheet</div></div>
+${body}
+<div class="footer">Verified via <a href="https://keyframe-staff-list.com" target="_blank">KeyFrame Staff List</a></div>
+</div></body></html>`;
+  }
+
+  let kflOrgData = null;
+
+  // ---------- organizer results: second small side-panel ----------
+  function renderOrgResultsHtml(roles) {
+    let html = "";
+    let orgUid = 0; // dedicated counter, always starts fresh -- must match buildOrgMarkdownFromDom's read order
+    roles.forEach((roleObj) => {
+      const hasContent = roleObj.groups.some((g) => g.people.length > 0);
+      if (!hasContent) return;
+      html += `<div class="korg-role"><div class="korg-role-head">${esc(roleObj.role)}</div>`;
+      roleObj.groups.forEach((g) => {
+        if (g.people.length === 0) return;
+        html += `<div class="korg-group">`;
+        html += g.studio
+          ? `<div class="korg-studio">🏢 ${esc(g.studio)}</div>`
+          : `<div class="korg-freelance">No studio listed</div>`;
+        html += `<div class="korg-chip-row">`;
+        g.people.forEach((p) => {
+          const gid = orgUid++;
+          const initialText = p.chosen === "official" && p.official ? p.official : p.original;
+          html += `<div class="korg-person">`;
+          html += `<span class="korg-person-name" id="korg-name-${gid}">${esc(initialText)}</span>`;
+          if (p.verdict === "not-found" || p.verdict === "error") {
+            html += `<span class="korg-tag notfound">not found</span>`;
+          } else if (p.official && p.official !== p.original) {
+            html += `<span class="korg-toggle" id="korg-toggle-${gid}" data-official="${esc(p.official)}" data-original="${esc(p.original)}" data-chosen="${p.chosen}">↔ as typed: ${esc(p.original)}</span>`;
+          } else {
+            html += `<span class="korg-tag ok">✓ verified</span>`;
+          }
+          html += `</div>`;
+        });
+        html += `</div>`; // close korg-chip-row
+        html += `</div>`; // close korg-group
+      });
+      html += `</div>`;
+    });
+    return html || `<div style="color:#8a8f98; padding:16px 0; font-size:12.5px;">Nothing parsed — check the pasted text.</div>`;
+  }
+
+  function showOrgResultsPanel(roles) {
+    document.getElementById("kfl-org-panel")?.remove();
+
+    const orgPanel = document.createElement("div");
+    orgPanel.id = "kfl-org-panel";
+    const mainRect = panel.getBoundingClientRect();
+    const leftPos = Math.max(20, mainRect.left - 420);
+    orgPanel.style.cssText = `
+      position: fixed; top: 20px; left: ${leftPos}px; width: 400px; max-height: 88vh;
+      background: #0b0d10; color: #e8e6e1; font-family: 'Inter', system-ui, sans-serif;
+      font-size: 13px; border-radius: 10px; box-shadow: 0 8px 30px rgba(0,0,0,.5);
+      z-index: 999998; overflow: hidden; border: 1px solid #262b33;
+      display: flex; flex-direction: column;
+    `;
+
+    orgPanel.innerHTML = `
+      <style>
+        #kfl-org-panel .korg-role { border-bottom: 1px solid #262b33; }
+        #kfl-org-panel .korg-role:last-child { border-bottom: none; }
+        #kfl-org-panel .korg-role-head { font-weight: 700; font-size: 13px; padding: 10px 14px 4px; }
+        #kfl-org-panel .korg-group { padding: 6px 14px 10px; }
+        #kfl-org-panel .korg-studio { font-family: monospace; font-size: 11px; color: #f5a623; margin-bottom: 6px; }
+        #kfl-org-panel .korg-freelance { font-family: monospace; font-size: 10.5px; color: #8a8f98; margin-bottom: 6px; }
+        #kfl-org-panel .korg-chip-row { display: flex; flex-wrap: wrap; gap: 6px; }
+        #kfl-org-panel .korg-person {
+          display: flex; align-items: center; gap: 6px; font-size: 12.5px;
+          background: #1c2028; border: 1px solid #262b33; border-radius: 20px;
+          padding: 4px 10px;
+        }
+        #kfl-org-panel .korg-tag { font-family: monospace; font-size: 9.5px; padding: 1px 6px; border-radius: 20px; white-space: nowrap; }
+        #kfl-org-panel .korg-tag.ok { background: rgba(137,195,122,.15); color: #89c37a; }
+        #kfl-org-panel .korg-tag.notfound { background: rgba(224,108,117,.15); color: #e06c75; }
+        #kfl-org-panel .korg-toggle { font-family: monospace; font-size: 10px; color: #4fd1c5; cursor: pointer; text-decoration: underline dotted; white-space: nowrap; }
+      </style>
+      <div id="korg-drag-handle" style="padding:10px 14px; background:#7e4ea0; font-weight:600; display:flex; justify-content:space-between; align-items:center; cursor:move; user-select:none; flex-shrink:0;">
+        <span>Credit Sheet Results</span>
+        <span id="korg-close" data-no-drag="1" style="cursor:pointer; opacity:.8;">✕</span>
+      </div>
+      <div style="padding:10px 14px; overflow-y:auto; flex:1;">
+        <div id="korg-results">${renderOrgResultsHtml(roles)}</div>
+        <div style="margin-top:16px; font-weight:700; font-size:12.5px; margin-bottom:6px;">Shareable output</div>
+        <textarea id="korg-preview" readonly style="width:100%; height:160px; box-sizing:border-box; background:#111; color:#e8e6e1; border:1px solid #262b33; border-radius:6px; padding:8px; font-family:monospace; font-size:11.5px; resize:vertical;">${esc(buildOrgMarkdown(roles))}</textarea>
+        <div style="display:flex; gap:8px; margin-top:8px;">
+          <button id="korg-copy" style="flex:1; background:#7e4ea0; color:#fff; border:none; border-radius:6px; padding:8px; cursor:pointer; font-weight:600; font-size:12.5px;">📋 Copy Markdown</button>
+          <button id="korg-viewpage" style="flex:1; background:#1c2028; color:#e8e6e1; border:1px solid #262b33; border-radius:6px; padding:8px; cursor:pointer; font-weight:600; font-size:12.5px;">🌐 View as Page</button>
+        </div>
+        <button id="korg-savehtml" style="width:100%; margin-top:6px; background:#1c2028; color:#e8e6e1; border:1px solid #262b33; border-radius:6px; padding:8px; cursor:pointer; font-weight:600; font-size:12.5px;">⬇️ Download HTML</button>
+      </div>
+    `;
+
+    document.body.appendChild(orgPanel);
+    setupDrag(document.getElementById("korg-drag-handle"), orgPanel);
+    document.getElementById("korg-close").onclick = () => orgPanel.remove();
+
+    document.getElementById("korg-copy").onclick = () => {
+      const md = document.getElementById("korg-preview").value;
+      const btn = document.getElementById("korg-copy");
+      const original = btn.textContent;
+      navigator.clipboard.writeText(md).then(() => {
+        btn.textContent = "✓ Copied!";
+        setTimeout(() => { btn.textContent = original; }, 1500);
+      }).catch(() => {
+        btn.textContent = "Copy failed";
+        setTimeout(() => { btn.textContent = original; }, 1500);
+      });
+    };
+
+    document.getElementById("korg-viewpage").onclick = () => {
+      const win = window.open("", "_blank");
+      if (!win) { alert("Popup blocked — allow popups for this site and try again."); return; }
+      win.document.write(buildSharePage(kflOrgData));
+      win.document.close();
+    };
+
+    document.getElementById("korg-savehtml").onclick = () => {
+      const html = buildSharePage(kflOrgData);
+      const blob = new Blob([html], { type: "text/html" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = "credit_sheet.html";
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+    };
+
+    // wire the per-person spelling toggles
+    orgPanel.querySelectorAll(".korg-toggle").forEach((toggleEl) => {
+      toggleEl.onclick = () => {
+        const nameEl = toggleEl.previousElementSibling;
+        const chosen = toggleEl.dataset.chosen === "official" ? "original" : "official";
+        toggleEl.dataset.chosen = chosen;
+        if (chosen === "official") {
+          nameEl.textContent = toggleEl.dataset.official;
+          toggleEl.textContent = "↔ as typed: " + toggleEl.dataset.original;
+        } else {
+          nameEl.textContent = toggleEl.dataset.original;
+          toggleEl.textContent = "↔ use English: " + toggleEl.dataset.official;
+        }
+        // reflect the choice back into kflOrgData so exports match the UI
+        const md = buildOrgMarkdownFromDom(orgPanel);
+        document.getElementById("korg-preview").value = md;
+      };
+    });
+  }
+
+  // Rebuilds markdown by reading the CURRENT toggle states directly from the
+  // side panel's DOM, so a manual spelling toggle is reflected immediately
+  // in the exported text without needing to re-run verification.
+  function buildOrgMarkdownFromDom(orgPanel) {
+    // Simplest reliable approach: mutate kflOrgData in place to match the
+    // DOM's current toggle states, then reuse the normal builder.
+    let idx = 0;
+    kflOrgData.forEach((roleObj) => {
+      roleObj.groups.forEach((g) => {
+        g.people.forEach((p) => {
+          const toggleEl = document.getElementById("korg-toggle-" + idx);
+          const nameEl = document.getElementById("korg-name-" + idx);
+          if (toggleEl) {
+            p.chosen = toggleEl.dataset.chosen;
+          }
+          idx++;
+        });
+      });
+    });
+    return buildOrgMarkdown(kflOrgData);
+  }
+
+  // ---------- panel body templates ----------
+  function lookupBodyHtml() {
+    return `
+      <div id="kfl-drag-handle" style="padding:10px 14px; background:#7e4ea0; font-weight:600; display:flex; justify-content:space-between; align-items:center; cursor:move; user-select:none;">
+        <span>KeyFrame Lookup</span>
+        <span id="kfl-close" data-no-drag="1" style="cursor:pointer; opacity:.8;">✕</span>
+      </div>
+      <div style="padding:12px 14px; display:flex; flex-direction:column; gap:8px;">
+        <textarea id="kfl-names" placeholder="One name per line, or comma-separated...&#10;Yutaka Nakamura&#10;Norio Matsumoto"
+          style="width:100%; height:70px; resize:vertical; background:#111; color:#eee; border:1px solid #262b33; border-radius:6px; padding:6px; box-sizing:border-box; font-family:inherit;"></textarea>
+        <button id="kfl-run" style="background:#7e4ea0; color:#fff; border:none; border-radius:6px; padding:8px; cursor:pointer; font-weight:600;">
+          Run lookup
+        </button>
+        <div style="display:flex; justify-content:space-between; align-items:center;">
+          <div id="kfl-cache-count" style="font-size:11px; color:#8a8f98;"></div>
+          <span id="kfl-clear-cache" style="font-size:11px; color:#8a8f98; cursor:pointer; text-decoration:underline;">Clear cache</span>
+        </div>
+        <div id="kfl-log" style="font-family:monospace; font-size:11px; color:#8a8f98; max-height:90px; overflow-y:auto; line-height:1.5; white-space:pre-wrap;"></div>
+        <div id="kfl-select" style="display:none; flex-direction:column; gap:6px; background:#111; border:1px solid #262b33; border-radius:6px; padding:8px; max-height:180px; overflow-y:auto;"></div>
+        <div style="display:flex; gap:8px;">
+          <button id="kfl-view" style="display:none; flex:1; background:#4fd1c5; color:#0b0d10; border:none; border-radius:6px; padding:8px; cursor:pointer; font-weight:600;">
+            View Results
+          </button>
+          <button id="kfl-download" style="display:none; flex:1; background:#1c2028; color:#e8e6e1; border:1px solid #262b33; border-radius:6px; padding:8px; cursor:pointer; font-weight:600;">
+            Download JSON
+          </button>
+        </div>
+        <button id="kfl-download-html" style="display:none; background:#1c2028; color:#e8e6e1; border:1px solid #262b33; border-radius:6px; padding:8px; cursor:pointer; font-weight:600; margin-top:4px;">
+          ⬇️ Download HTML (to share)
+        </button>
+        <div style="text-align:center; margin-top:2px;">
+          <span id="kfl-mode-switch" style="font-size:11px; color:#8a8f98; cursor:pointer; text-decoration:underline;">📋 Switch to Credit Sheet Organizer</span>
+        </div>
+      </div>
+    `;
+  }
+
+  function organizeBodyHtml() {
+    return `
+      <div id="kfl-drag-handle" style="padding:10px 14px; background:#7e4ea0; font-weight:600; display:flex; justify-content:space-between; align-items:center; cursor:move; user-select:none;">
+        <span>Credit Sheet Organizer</span>
+        <span id="kfl-close" data-no-drag="1" style="cursor:pointer; opacity:.8;">✕</span>
+      </div>
+      <div style="padding:12px 14px; display:flex; flex-direction:column; gap:8px;">
+        <textarea id="org-input" placeholder="Paste raw credit sheet text here..."
+          style="width:100%; height:130px; resize:vertical; background:#111; color:#eee; border:1px solid #262b33; border-radius:6px; padding:6px; box-sizing:border-box; font-family:monospace; font-size:12px;"></textarea>
+        <button id="org-run" style="background:#7e4ea0; color:#fff; border:none; border-radius:6px; padding:8px; cursor:pointer; font-weight:600;">
+          Parse &amp; Verify
+        </button>
+        <div id="org-log" style="font-family:monospace; font-size:11px; color:#8a8f98; max-height:90px; overflow-y:auto; line-height:1.5; white-space:pre-wrap;"></div>
+        <div id="org-select" style="display:none; flex-direction:column; gap:6px; background:#111; border:1px solid #262b33; border-radius:6px; padding:8px; max-height:180px; overflow-y:auto;"></div>
+        <div style="text-align:center; margin-top:2px;">
+          <span id="kfl-mode-switch" style="font-size:11px; color:#8a8f98; cursor:pointer; text-decoration:underline;">🔍 Switch to Lookup</span>
+        </div>
+      </div>
+    `;
+  }
+
+  function wireLookupHandlers() {
+    document.getElementById("kfl-close").onclick = () => panel.remove();
+    setupDrag(document.getElementById("kfl-drag-handle"), panel);
+    updateCacheCount();
+
+    document.getElementById("kfl-clear-cache").onclick = () => {
+      for (const k in cache) delete cache[k];
+      updateCacheCount();
+      log("Cache cleared.");
+    };
+
+    document.getElementById("kfl-mode-switch").onclick = () => {
+      kflMode = "organize";
+      renderPanel();
+    };
+
+    document.getElementById("kfl-view").onclick = () => {
+      if (!lastResults) return;
+      const win = window.open("", "_blank");
+      if (!win) { log("Popup blocked — allow popups for this site and try again."); return; }
+      win.document.write(buildResultsPage(lastResults));
+      win.document.close();
+    };
+
+    document.getElementById("kfl-download").onclick = () => {
+      if (!lastResults) return;
+      const blob = new Blob([JSON.stringify(lastResults, null, 2)], { type: "application/json" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = "keyframe_results.json";
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+    };
+
+    document.getElementById("kfl-download-html").onclick = () => {
+      if (!lastResults) return;
+      const html = buildResultsPage(lastResults);
+      const blob = new Blob([html], { type: "text/html" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = "keyframe_lookup_results.html";
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+    };
+
+    document.getElementById("kfl-run").onclick = async () => {
+      const names = document.getElementById("kfl-names").value
+        .split(/[\n,]/).map((s) => s.trim()).filter(Boolean);
+      if (names.length === 0) { log("Enter at least one name."); return; }
+
+      document.getElementById("kfl-log").textContent = "";
+      document.getElementById("kfl-run").disabled = true;
+      document.getElementById("kfl-mode-switch").style.pointerEvents = "none";
+      document.getElementById("kfl-mode-switch").style.opacity = "0.4";
+      document.getElementById("kfl-view").style.display = "none";
+      document.getElementById("kfl-download").style.display = "none";
+      document.getElementById("kfl-download-html").style.display = "none";
+      lastResults = null;
+
+      const results = [];
+      for (let i = 0; i < names.length; i++) {
+        const name = names[i];
+        const key = cacheKey(name);
+
+        if (cache[key]) {
+          log(`${name}: using cached result`);
+          results.push(cache[key]);
+          continue;
+        }
+
+        log(`Looking up: ${name} ...`);
+        try {
+          const res = await lookupName(name);
+          results.push(res);
+          cache[key] = res;
+          updateCacheCount();
+          log(res.found ? `  -> OK` : `  -> FAILED (${res.error})`);
+        } catch (e) {
+          const failed = { query: name, found: false, error: String(e) };
+          results.push(failed);
+          cache[key] = failed;
+          updateCacheCount();
+          log(`  -> ERROR: ${e}`);
+        }
+        if (i < names.length - 1) await sleep(DELAY_MS);
+      }
+
+      lastResults = results;
+      log(`Done — ${results.filter((r) => r.found).length}/${results.length} found.`);
+      document.getElementById("kfl-run").disabled = false;
+      document.getElementById("kfl-mode-switch").style.pointerEvents = "";
+      document.getElementById("kfl-mode-switch").style.opacity = "";
+      document.getElementById("kfl-view").style.display = "block";
+      document.getElementById("kfl-download").style.display = "block";
+      document.getElementById("kfl-download-html").style.display = "block";
+    };
+  }
+
+  function wireOrganizeHandlers() {
+    document.getElementById("kfl-close").onclick = () => panel.remove();
+    setupDrag(document.getElementById("kfl-drag-handle"), panel);
+
+    const orgLog = (msg) => {
+      const el = document.getElementById("org-log");
+      if (!el) return;
+      el.textContent += (el.textContent ? "\n" : "") + msg;
+      el.scrollTop = el.scrollHeight;
+    };
+
+    document.getElementById("kfl-mode-switch").onclick = () => {
+      kflMode = "lookup";
+      renderPanel();
+    };
+
+    document.getElementById("org-run").onclick = async () => {
+      const raw = document.getElementById("org-input").value;
+      if (!raw.trim()) { orgLog("Paste some text first."); return; }
+
+      document.getElementById("org-log").textContent = "";
+      document.getElementById("org-run").disabled = true;
+      document.getElementById("kfl-mode-switch").style.pointerEvents = "none";
+      document.getElementById("kfl-mode-switch").style.opacity = "0.4";
+
+      const tokens = parseCreditSheet(raw);
+
+      const verified = await verifyTokens(tokens, (done, total, name) => {
+        orgLog(`Verifying ${done}/${total}: ${name}`);
+      });
+
+      const roles = reconstruct(verified);
+      kflOrgData = roles;
+      showOrgResultsPanel(roles);
+
+      orgLog("Done. Results opened in the side panel.");
+      document.getElementById("org-run").disabled = false;
+      document.getElementById("kfl-mode-switch").style.pointerEvents = "";
+      document.getElementById("kfl-mode-switch").style.opacity = "";
+    };
+  }
+
+  function renderPanel() {
+    panel.innerHTML = kflMode === "lookup" ? lookupBodyHtml() : organizeBodyHtml();
+    if (kflMode === "lookup") wireLookupHandlers();
+    else wireOrganizeHandlers();
+  }
+
+  renderPanel();
 })();
