@@ -1,12 +1,10 @@
 # KeyFrame Lookup
 
-A small in-browser tool for looking up animation staff on [KeyFrame Staff List](https://keyframe-staff-list.com) by name, and viewing their full credit history grouped by role (Key Animation, Animation Director, Storyboard, etc.) — expandable per role, with year and episode info for each work.
+A small in-browser tool for looking up animation staff on [KeyFrame Staff List](https://keyframe-staff-list.com) by name, and viewing their full credit history grouped by role (Key Animation, Animation Director, Storyboard, etc.) — expandable per role, with cover art, year, and episode info for each work. If a name matches multiple people, you're prompted to pick the right one (or skip it) instead of it silently guessing.
 
 It runs entirely inside your own browser tab as a bookmarklet or console script — no server, no installation, no dependencies.
 
-
 https://github.com/user-attachments/assets/914648ed-193e-4bf1-84e2-4ba2568f012c
-
 
 ## Install (30 seconds)
 
@@ -29,8 +27,8 @@ Open that page and drag the amber button on it to your bookmarks bar. That's it 
 1. Go to [keyframe-staff-list.com](https://keyframe-staff-list.com) and let the page load normally.
 2. Click your new bookmark. A small panel appears — drag it anywhere by its header.
 3. Type or paste names, one per line or comma-separated.
-4. Click **Run lookup**. Progress logs in the panel as it works through your list.
-5. When it's done, click **View Results** for a full formatted page (grouped by role, click to expand each), or **Download JSON** for the raw data.
+4. Click **Run lookup**. Progress logs in the panel as it works through your list. If a name matches more than one person, the panel pauses and shows you the candidates to pick from (or a Skip button).
+5. When it's done, click **View Results** for a full formatted page (grouped by role with cover art, click a role to expand it), or **Download JSON** for the raw data.
 
 Already-looked-up names are cached in memory for the session — adding a name to your list and re-running won't re-fetch names you already have.
 
@@ -45,3 +43,8 @@ KeyFrame Staff List's own [scraping policy](https://keyframe-staff-list.com/scra
 ## Credit
 
 All data comes from [KeyFrame Staff List](https://keyframe-staff-list.com), built and maintained by its contributors. If you use data pulled with this tool anywhere public, please credit them.
+
+## Changelog
+
+- **Cover art + name disambiguation** — each work now shows its cover image; names matching multiple people prompt you to pick one instead of guessing.
+- **Initial release** — bookmarklet/console tool, results grouped by role, JSON export.
