@@ -34,7 +34,12 @@
       <button id="kfl-run" style="background:#7e4ea0; color:#fff; border:none; border-radius:6px; padding:8px; cursor:pointer; font-weight:600;">
         Run lookup
       </button>
+      <div style="display:flex; justify-content:space-between; align-items:center;">
+        <div id="kfl-cache-count" style="font-size:11px; color:#8a8f98;"></div>
+        <span id="kfl-clear-cache" style="font-size:11px; color:#8a8f98; cursor:pointer; text-decoration:underline;">Clear cache</span>
+      </div>
       <div id="kfl-log" style="font-family:monospace; font-size:11px; color:#8a8f98; max-height:90px; overflow-y:auto; line-height:1.5; white-space:pre-wrap;"></div>
+      <div id="kfl-select" style="display:none; flex-direction:column; gap:6px; background:#111; border:1px solid #262b33; border-radius:6px; padding:8px; max-height:180px; overflow-y:auto;"></div>
       <div style="display:flex; gap:8px;">
         <button id="kfl-view" style="display:none; flex:1; background:#4fd1c5; color:#0b0d10; border:none; border-radius:6px; padding:8px; cursor:pointer; font-weight:600;">
           View Results
@@ -85,6 +90,17 @@
   const cache = {};
   const cacheKey = (name) => name.trim().toLowerCase();
 
+  const updateCacheCount = () => {
+    const n = Object.keys(cache).length;
+    document.getElementById("kfl-cache-count").textContent = n > 0 ? `${n} cached` : "";
+  };
+
+  document.getElementById("kfl-clear-cache").onclick = () => {
+    for (const k in cache) delete cache[k];
+    updateCacheCount();
+    log("Cache cleared.");
+  };
+
   function esc(s) {
     if (s == null) return "";
     return String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
@@ -103,7 +119,7 @@
               map.set(work.uuid, {
                 work: work.stafflist_name, workJa: work.stafflist_name_ja,
                 year: work.seasonYear, slug: work.slug, studios: work.stafflist_studios,
-                status: work.status, episodes: [],
+                status: work.status, kv: work.stafflist_kv, episodes: [],
               });
             }
             const entry = map.get(work.uuid);
@@ -121,18 +137,16 @@
     return roles;
   }
 
-  async function lookupName(name) {
-    const result = { query: name, found: false };
-
+  async function searchName(name) {
     const searchRes = await fetch(`/api/search/?q=${encodeURIComponent(name)}&type=all`, { credentials: "include" });
-    if (!searchRes.ok) { result.error = `Search failed (status ${searchRes.status})`; return result; }
+    if (!searchRes.ok) return { error: `Search failed (status ${searchRes.status})` };
     const matches = (await searchRes.json()).staff || [];
-    if (matches.length === 0) { result.error = "No matching staff found"; return result; }
+    if (matches.length === 0) return { error: "No matching staff found" };
+    return { matches };
+  }
 
-    result.allSearchMatches = matches.map((m) => ({ id: m.anilist_id, en: m.en, ja: m.ja, jobs: m.jobs }));
-
-    const staffId = matches[0].anilist_id;
-    if (staffId == null) { result.error = "Top match had no id"; return result; }
+  async function fetchProfile(name, staffId, allMatches) {
+    const result = { query: name, found: false, allSearchMatches: allMatches };
 
     const profileRes = await fetch(`/api/person/show.php?id=${staffId}&type=person`, { credentials: "include" });
     if (!profileRes.ok) { result.error = `Profile fetch failed (status ${profileRes.status})`; return result; }
@@ -150,6 +164,52 @@
     result.roles = buildRoleGroups(credits);
 
     return result;
+  }
+
+  // Shows candidate buttons in the panel and resolves with the chosen match
+  // (or null if the user clicks Skip). Pauses the run loop until answered.
+  function promptForMatch(name, matches) {
+    return new Promise((resolve) => {
+      const box = document.getElementById("kfl-select");
+      box.style.display = "flex";
+      box.innerHTML = `<div style="color:#8a8f98; font-size:11.5px; margin-bottom:2px;">Multiple matches for "${esc(name)}" — pick one:</div>`;
+
+      matches.forEach((m, i) => {
+        const btn = document.createElement("button");
+        const jobsPreview = (m.jobs || []).slice(0, 2).join(", ");
+        btn.textContent = `${m.en || m.ja || "Unnamed"}${m.ja ? ` (${m.ja})` : ""}${jobsPreview ? ` — ${jobsPreview}` : ""}`;
+        btn.style.cssText = "text-align:left; background:#1c2028; color:#e8e6e1; border:1px solid #262b33; border-radius:6px; padding:6px 8px; cursor:pointer; font-size:11.5px;";
+        btn.onclick = () => { box.style.display = "none"; box.innerHTML = ""; resolve(matches[i]); };
+        box.appendChild(btn);
+      });
+
+      const skipBtn = document.createElement("button");
+      skipBtn.textContent = "Skip this name";
+      skipBtn.style.cssText = "background:#2a1414; color:#f2a; border:1px solid #4a1f1f; border-radius:6px; padding:6px 8px; cursor:pointer; font-size:11.5px;";
+      skipBtn.onclick = () => { box.style.display = "none"; box.innerHTML = ""; resolve(null); };
+      box.appendChild(skipBtn);
+    });
+  }
+
+  async function lookupName(name) {
+    const searchResult = await searchName(name);
+    if (searchResult.error) return { query: name, found: false, error: searchResult.error };
+
+    const matches = searchResult.matches;
+    const allMatches = matches.map((m) => ({ id: m.anilist_id, en: m.en, ja: m.ja, jobs: m.jobs }));
+
+    let chosen;
+    if (matches.length === 1) {
+      chosen = matches[0];
+    } else {
+      log(`  -> ${matches.length} matches found, pick one in the panel...`);
+      chosen = await promptForMatch(name, matches);
+      if (!chosen) return { query: name, found: false, error: "Skipped by user (multiple matches)", allSearchMatches: allMatches };
+    }
+
+    if (chosen.anilist_id == null) return { query: name, found: false, error: "Chosen match had no id", allSearchMatches: allMatches };
+
+    return fetchProfile(name, chosen.anilist_id, allMatches);
   }
 
   // ---------- results page builder ----------
@@ -175,11 +235,14 @@
           <div class="role-works">
             ${works.map((w) => `
               <div class="role-work">
-                <div class="role-work-title">${esc(w.work || w.slug)}</div>
-                <div class="role-work-meta">
-                  <span class="year">${esc(w.year ?? "—")}</span>
-                  ${w.studios ? `<span>${esc(w.studios)}</span>` : ""}
-                  ${w.episodes && w.episodes.length ? `<span>${esc(w.episodes.join(", "))}</span>` : ""}
+                ${w.kv ? `<img class="role-work-thumb" src="${esc(w.kv)}" alt="" loading="lazy" onerror="this.remove()">` : ""}
+                <div class="role-work-text">
+                  <div class="role-work-title">${esc(w.work || w.slug)}</div>
+                  <div class="role-work-meta">
+                    <span class="year">${esc(w.year ?? "—")}</span>
+                    ${w.studios ? `<span>${esc(w.studios)}</span>` : ""}
+                    ${w.episodes && w.episodes.length ? `<span>${esc(w.episodes.join(", "))}</span>` : ""}
+                  </div>
                 </div>
               </div>
             `).join("")}
@@ -232,8 +295,10 @@
         .role-count { font-family:'JetBrains Mono',monospace; font-size:11px; color:var(--amber); background:rgba(245,166,35,.1); padding:2px 8px; border-radius:20px; }
         .role-works { display:none; padding:0 22px 12px 46px; }
         .role-section.open .role-works { display:block; }
-        .role-work { padding:8px 0; border-bottom:1px dashed var(--line); }
+        .role-work { display:flex; gap:10px; align-items:flex-start; padding:8px 0; border-bottom:1px dashed var(--line); }
         .role-work:last-child { border-bottom:none; }
+        .role-work-thumb { width:42px; height:58px; object-fit:cover; border-radius:4px; flex-shrink:0; background:var(--panel-2); }
+        .role-work-text { flex:1; min-width:0; }
         .role-work-title { font-weight:600; font-size:14px; }
         .role-work-meta { margin-top:3px; font-family:'JetBrains Mono',monospace; font-size:11.5px; color:var(--muted); display:flex; gap:10px; flex-wrap:wrap; }
         .role-work-meta .year { color:var(--cyan); }
@@ -241,7 +306,9 @@
         .error-card .q { color:var(--text); font-weight:600; }
         footer { text-align:center; color:var(--muted); font-size:12px; padding:20px; }
         footer a { color:var(--amber); }
-      </style></head>
+      </style>
+      <link rel="icon" href="data:image/svg+xml,${encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32"><defs><pattern id="s" width="8" height="8" patternTransform="rotate(45)" patternUnits="userSpaceOnUse"><rect width="8" height="8" fill="#f5a623"/><rect width="4" height="8" fill="#111111"/></pattern></defs><rect width="32" height="32" rx="6" fill="url(#s)"/></svg>')}">
+      </head>
       <body>
         <header><div class="slate-mark"></div><div><h1>KEY<span>FRAME</span> RESULTS</h1><div class="sub">${esc(doneMsg)}</div></div></header>
         <main>${bodyHtml}</main>
@@ -299,11 +366,13 @@
         const res = await lookupName(name);
         results.push(res);
         cache[key] = res;
+        updateCacheCount();
         log(res.found ? `  -> OK` : `  -> FAILED (${res.error})`);
       } catch (e) {
         const failed = { query: name, found: false, error: String(e) };
         results.push(failed);
         cache[key] = failed;
+        updateCacheCount();
         log(`  -> ERROR: ${e}`);
       }
       // Only delay after an actual network fetch, not after a cache hit.
