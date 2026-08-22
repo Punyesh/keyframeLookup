@@ -4,7 +4,9 @@ A small in-browser tool for looking up animation staff on [KeyFrame Staff List](
 
 It runs entirely inside your own browser tab as a bookmarklet or console script — no server, no installation, no dependencies.
 
-https://github.com/user-attachments/assets/914648ed-193e-4bf1-84e2-4ba2568f012c
+
+https://github.com/user-attachments/assets/d0d0ef17-1b34-4e58-843b-3156c7998cf7
+
 
 ## Install (30 seconds)
 
