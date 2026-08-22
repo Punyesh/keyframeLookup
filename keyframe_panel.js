@@ -177,8 +177,11 @@
       matches.forEach((m, i) => {
         const btn = document.createElement("button");
         const jobsPreview = (m.jobs || []).slice(0, 2).join(", ");
-        btn.textContent = `${m.en || m.ja || "Unnamed"}${m.ja ? ` (${m.ja})` : ""}${jobsPreview ? ` — ${jobsPreview}` : ""}`;
-        btn.style.cssText = "text-align:left; background:#1c2028; color:#e8e6e1; border:1px solid #262b33; border-radius:6px; padding:6px 8px; cursor:pointer; font-size:11.5px;";
+        const studioTag = m.is_studio ? "[Studio] " : "";
+        btn.textContent = `${studioTag}${m.en || m.ja || "Unnamed"}${m.ja ? ` (${m.ja})` : ""}${jobsPreview ? ` — ${jobsPreview}` : ""}`;
+        btn.style.cssText = m.is_studio
+          ? "text-align:left; background:#1c2028; color:#f5a623; border:1px solid #3a3020; border-radius:6px; padding:6px 8px; cursor:pointer; font-size:11.5px;"
+          : "text-align:left; background:#1c2028; color:#e8e6e1; border:1px solid #262b33; border-radius:6px; padding:6px 8px; cursor:pointer; font-size:11.5px;";
         btn.onclick = () => { box.style.display = "none"; box.innerHTML = ""; resolve(matches[i]); };
         box.appendChild(btn);
       });
@@ -196,7 +199,7 @@
     if (searchResult.error) return { query: name, found: false, error: searchResult.error };
 
     const matches = searchResult.matches;
-    const allMatches = matches.map((m) => ({ id: m.anilist_id, en: m.en, ja: m.ja, jobs: m.jobs }));
+    const allMatches = matches.map((m) => ({ id: m.anilist_id, en: m.en, ja: m.ja, jobs: m.jobs, isStudio: !!m.is_studio }));
 
     let chosen;
     if (matches.length === 1) {
@@ -205,6 +208,10 @@
       log(`  -> ${matches.length} matches found, pick one in the panel...`);
       chosen = await promptForMatch(name, matches);
       if (!chosen) return { query: name, found: false, error: "Skipped by user (multiple matches)", allSearchMatches: allMatches };
+    }
+
+    if (chosen.is_studio) {
+      return { query: name, found: false, error: "That match is a studio, not a staff member — studio profiles aren't supported by this tool", allSearchMatches: allMatches };
     }
 
     if (chosen.anilist_id == null) return { query: name, found: false, error: "Chosen match had no id", allSearchMatches: allMatches };
