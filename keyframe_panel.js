@@ -137,6 +137,42 @@
     return roles;
   }
 
+  // Groups by WORK instead of by role — one card per anime, with all of this
+  // person's roles on it listed together, each with its own episode list.
+  // This is what feeds the AniList-style poster grid view (as opposed to the
+  // role-first list view above).
+  function buildWorkGrid(credits) {
+    const map = new Map();
+    for (const work of credits || []) {
+      if (!map.has(work.uuid)) {
+        map.set(work.uuid, {
+          work: work.stafflist_name, workJa: work.stafflist_name_ja,
+          year: work.seasonYear, slug: work.slug, studios: work.stafflist_studios,
+          status: work.status, kv: work.stafflist_kv, roleMap: new Map(), // roleName -> episodes[]
+        });
+      }
+      const entry = map.get(work.uuid);
+      for (const nameEntry of work.names || []) {
+        for (const cat of nameEntry.categories || []) {
+          for (const role of cat.roles || []) {
+            const roleName = role.role_en || cat.category || "Other";
+            if (!entry.roleMap.has(roleName)) entry.roleMap.set(roleName, []);
+            for (const c of role.credits || []) {
+              if (c.episode) entry.roleMap.get(roleName).push(c.episode);
+            }
+          }
+        }
+      }
+    }
+    return Array.from(map.values())
+      .map((w) => ({
+        work: w.work, workJa: w.workJa, year: w.year, slug: w.slug,
+        studios: w.studios, status: w.status, kv: w.kv,
+        roles: Array.from(w.roleMap.entries()).map(([name, episodes]) => ({ name, episodes })),
+      }))
+      .sort((a, b) => (b.year || 0) - (a.year || 0));
+  }
+
   async function searchName(name) {
     const searchRes = await fetch(`/api/search/?q=${encodeURIComponent(name)}&type=all`, { credentials: "include" });
     if (!searchRes.ok) return { error: `Search failed (status ${searchRes.status})` };
@@ -162,6 +198,7 @@
     result.studios = data.studios || {};
     result.creditCount = credits.length;
     result.roles = buildRoleGroups(credits);
+    result.workGrid = buildWorkGrid(credits);
 
     return result;
   }
@@ -269,9 +306,40 @@
     `;
   }
 
+  function renderPersonGrid(r) {
+    if (!r.found) {
+      return `<div class="person"><div class="error-card"><span class="q">${esc(r.query)}</span> — ${esc(r.error || "not found")}</div></div>`;
+    }
+    const jobs = (r.jobs || []).map((j) => `<span class="badge">${esc(j)}</span>`).join("");
+    const works = r.workGrid || [];
+
+    const cardsHtml = works.map((w) => `
+      <div class="grid-card">
+        ${w.kv
+          ? `<img class="grid-card-img" src="${esc(w.kv)}" alt="" loading="lazy" onerror="this.onerror=null;this.style.display='none';this.nextElementSibling.style.display='flex';">`
+          : ""}
+        <div class="grid-card-placeholder" style="${w.kv ? "display:none;" : ""}">${esc((w.work || w.slug || "?").slice(0, 1))}</div>
+        <div class="grid-card-title">${esc(w.work || w.slug)}</div>
+        <div class="grid-card-year">${esc(w.year ?? "—")}</div>
+        <div class="grid-role-pills">${w.roles.map((r) => `<span class="grid-role-pill">${esc(r.name)}${r.episodes.length ? ` <span class="ep">${esc(r.episodes.join(", "))}</span>` : ""}</span>`).join("")}</div>
+      </div>
+    `).join("");
+
+    return `
+      <div class="person">
+        <div class="person-head">
+          <div class="person-name">${esc(r.nameEn || r.query)}${r.nameJa ? `<span class="ja">${esc(r.nameJa)}</span>` : ""}</div>
+          <div class="badges">${jobs}</div>
+        </div>
+        <div class="work-grid">${cardsHtml || '<div style="padding:16px 22px; color:var(--muted); font-size:13px;">No credits listed.</div>'}</div>
+      </div>
+    `;
+  }
+
   function buildResultsPage(results) {
     const doneMsg = `${results.filter((r) => r.found).length}/${results.length} found`;
-    const bodyHtml = results.map(renderPerson).join("");
+    const bodyHtmlList = results.map(renderPerson).join("");
+    const bodyHtmlGrid = results.map(renderPersonGrid).join("");
     return `
       <!DOCTYPE html><html><head><meta charset="UTF-8"><title>KeyFrame Lookup — Results</title>
       <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -313,12 +381,61 @@
         .error-card .q { color:var(--text); font-weight:600; }
         footer { text-align:center; color:var(--muted); font-size:12px; padding:20px; }
         footer a { color:var(--amber); }
+
+        /* view toggle */
+        .view-toggle { display:flex; gap:6px; margin-left:auto; }
+        .view-toggle button {
+          font-family:'Inter',sans-serif; font-size:12.5px; font-weight:600;
+          background:var(--panel-2); color:var(--muted); border:1px solid var(--line);
+          border-radius:6px; padding:7px 14px; cursor:pointer;
+        }
+        .view-toggle button.active { background:var(--amber); color:#14171c; border-color:var(--amber); }
+
+        /* AniList-style poster grid */
+        #kfl-view-grid { display:none; }
+        body[data-view="grid"] #kfl-view-list { display:none; }
+        body[data-view="grid"] #kfl-view-grid { display:block; }
+        .work-grid {
+          display:grid; grid-template-columns:repeat(auto-fill, minmax(120px, 1fr));
+          gap:16px; padding:18px 22px;
+        }
+        .grid-card { display:flex; flex-direction:column; }
+        .grid-card-img {
+          width:100%; aspect-ratio:2/3; object-fit:cover; border-radius:6px;
+          background:var(--panel-2); box-shadow:0 2px 10px rgba(0,0,0,.4);
+        }
+        .grid-card-placeholder {
+          width:100%; aspect-ratio:2/3; border-radius:6px; background:var(--panel-2);
+          display:flex; align-items:center; justify-content:center;
+          font-family:'Space Grotesk',sans-serif; font-size:28px; font-weight:700; color:var(--line);
+        }
+        .grid-card-title {
+          font-size:12.5px; font-weight:600; line-height:1.3; margin-top:7px;
+          display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden;
+        }
+        .grid-card-year { font-family:'JetBrains Mono',monospace; font-size:10.5px; color:var(--cyan); margin-top:3px; }
+        .grid-role-pills { display:flex; flex-wrap:wrap; gap:4px; margin-top:5px; }
+        .grid-role-pill {
+          font-size:9px; background:var(--panel-2); border:1px solid var(--line);
+          padding:2px 6px; border-radius:20px; color:var(--muted);
+        }
+        .grid-role-pill .ep { color:var(--cyan); font-family:'JetBrains Mono',monospace; }
       </style>
       <link rel="icon" href="data:image/svg+xml,${encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32"><defs><pattern id="s" width="8" height="8" patternTransform="rotate(45)" patternUnits="userSpaceOnUse"><rect width="8" height="8" fill="#f5a623"/><rect width="4" height="8" fill="#111111"/></pattern></defs><rect width="32" height="32" rx="6" fill="url(#s)"/></svg>')}">
       </head>
-      <body>
-        <header><div class="slate-mark"></div><div><h1>KEY<span>FRAME</span> RESULTS</h1><div class="sub">${esc(doneMsg)}</div></div></header>
-        <main>${bodyHtml}</main>
+      <body data-view="list">
+        <header>
+          <div class="slate-mark"></div>
+          <div><h1>KEY<span>FRAME</span> RESULTS</h1><div class="sub">${esc(doneMsg)}</div></div>
+          <div class="view-toggle">
+            <button id="kfl-btn-list" class="active" onclick="document.body.dataset.view='list';document.getElementById('kfl-btn-list').classList.add('active');document.getElementById('kfl-btn-grid').classList.remove('active');">☰ List</button>
+            <button id="kfl-btn-grid" onclick="document.body.dataset.view='grid';document.getElementById('kfl-btn-grid').classList.add('active');document.getElementById('kfl-btn-list').classList.remove('active');">▦ Grid</button>
+          </div>
+        </header>
+        <main>
+          <div id="kfl-view-list">${bodyHtmlList}</div>
+          <div id="kfl-view-grid">${bodyHtmlGrid}</div>
+        </main>
         <footer>Data via <a href="https://keyframe-staff-list.com" target="_blank">KeyFrame Staff List</a></footer>
       </body></html>
     `;
