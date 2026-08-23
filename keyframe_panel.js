@@ -670,6 +670,43 @@
   function isRoleHeader(line) { return !!ROLE_SET[kflNorm(line)]; }
   function roleLabel(line) { return ROLE_SET[kflNorm(line)] || line; }
 
+  // Handles lines like "脚本： 高山淳史 コンテ： 山下 悟 宇和野歩 渋谷亮介" --
+  // multiple role labels and their names crammed onto one line, separated
+  // by full-width or half-width colons, instead of one role per line. Splits
+  // on colons, then finds the role-term trailing each "names" segment (that
+  // trailing term is actually the NEXT role's label). Returns null if the
+  // line has no colon at all (not this format).
+  function parseInlineRoleLine(line) {
+    const parts = line.split(/[：:]/).map((s) => s.trim()).filter((s) => s !== "");
+    if (parts.length < 2) return null;
+
+    const result = [];
+    let currentRoleLabel = parts[0];
+    for (let i = 1; i < parts.length; i++) {
+      const segment = parts[i];
+      const isLast = i === parts.length - 1;
+      if (isLast) {
+        result.push({ role: currentRoleLabel, namesText: segment });
+      } else {
+        const words = segment.split(/\s+/);
+        let splitIndex = words.length;
+        let foundRole = null;
+        for (let wlen = Math.min(3, words.length); wlen >= 1; wlen--) {
+          const candidateRole = words.slice(words.length - wlen).join("");
+          if (isRoleHeader(candidateRole)) {
+            foundRole = candidateRole;
+            splitIndex = words.length - wlen;
+            break;
+          }
+        }
+        const namesText = words.slice(0, splitIndex).join(" ");
+        result.push({ role: currentRoleLabel, namesText });
+        currentRoleLabel = foundRole || segment; // fallback avoids losing data if no role term found
+      }
+    }
+    return result;
+  }
+
   function parseCreditSheet(raw) {
     const lines = raw.split("\n").map((l) => l.trim()).filter(Boolean);
     const tokens = [];
@@ -680,6 +717,21 @@
         tokens.push({ kind: "role", text: currentRole });
         return;
       }
+
+      const inline = parseInlineRoleLine(line);
+      if (inline) {
+        inline.forEach(({ role, namesText }) => {
+          const label = roleLabel(role);
+          tokens.push({ kind: "role", text: label });
+          currentRole = label;
+          const parts = namesText.split(/\s{2,}/).map((p) => p.trim()).filter(Boolean);
+          parts.forEach((part) => {
+            tokens.push({ kind: "candidate", text: part, role: currentRole });
+          });
+        });
+        return;
+      }
+
       const parts = line.split(/\s{2,}/).map((p) => p.trim()).filter(Boolean);
       parts.forEach((part) => {
         tokens.push({ kind: "candidate", text: part, role: currentRole });
@@ -741,38 +793,54 @@
   }
 
   // When a candidate comes back not-found as a whole, it might actually be
-  // two people accidentally joined by a single space (looks identical to a
-  // real "Firstname Lastname" in plain text -- there's no way to tell them
-  // apart from shape alone, e.g. "yaya Christine" vs "Kartik Sharma"). Check
-  // whether each half independently exists on KeyFrame before ever
-  // suggesting a split, so this only fires on real evidence.
+  // several people accidentally joined by single spaces (looks identical to
+  // a real multi-word name in plain text -- there's no way to tell apart
+  // from shape alone). Greedily searches for the LONGEST word-prefix that
+  // independently exists on KeyFrame, consumes it, and repeats on the rest
+  // -- preferring to keep multi-word names together (e.g. "山下 悟" as one
+  // person) over over-splitting. Only ever suggests a split backed by real
+  // search evidence for every resulting piece.
   async function trySplitFallback(text) {
-    const parts = text.trim().split(/\s+/);
-    if (parts.length !== 2) return null;
-    const [partA, partB] = parts;
-    let resA, resB;
-    try {
-      [resA, resB] = await Promise.all([
-        fetch(`/api/search/?q=${encodeURIComponent(partA)}&type=all`, { credentials: "include" }).then((r) => (r.ok ? r.json() : null)),
-        fetch(`/api/search/?q=${encodeURIComponent(partB)}&type=all`, { credentials: "include" }).then((r) => (r.ok ? r.json() : null)),
-      ]);
-    } catch (e) {
-      return null;
+    const words = text.trim().split(/\s+/);
+    if (words.length < 2) return null;
+
+    const parts = [];
+    let remaining = words.slice();
+
+    while (remaining.length > 0) {
+      let matched = false;
+      for (let len = remaining.length; len >= 1; len--) {
+        const candidate = remaining.slice(0, len).join(" ");
+        let matches = [];
+        try {
+          const res = await fetch(`/api/search/?q=${encodeURIComponent(candidate)}&type=all`, { credentials: "include" });
+          const body = res.ok ? await res.json() : null;
+          matches = (body && body.staff) || [];
+        } catch (e) {
+          matches = [];
+        }
+        if (matches.length > 0) {
+          parts.push({ text: candidate, matches });
+          remaining = remaining.slice(len);
+          matched = true;
+          break;
+        }
+      }
+      if (!matched) return null; // some leftover chunk doesn't resolve to anything -- give up, not confident enough to suggest a split
     }
-    const matchesA = (resA && resA.staff) || [];
-    const matchesB = (resB && resB.staff) || [];
-    if (matchesA.length === 0 || matchesB.length === 0) return null;
-    return { partA, partB, matchesA, matchesB };
+
+    return parts.length >= 2 ? parts : null; // only useful if it actually found more than one person
   }
 
-  function promptSplitConfirm(original, partA, partB) {
+  function promptSplitConfirm(original, parts) {
     return new Promise((resolve) => {
       const box = document.getElementById("org-select");
       box.style.display = "flex";
-      box.innerHTML = `<div style="color:#8a8f98; font-size:11.5px; margin-bottom:2px;">"${esc(original)}" wasn't found as one entry, but "${esc(partA)}" and "${esc(partB)}" both exist separately — split into two people?</div>`;
+      const partsPreview = parts.map((p) => `"${p.text}"`).join(", ");
+      box.innerHTML = `<div style="color:#8a8f98; font-size:11.5px; margin-bottom:2px;">"${esc(original)}" wasn't found as one entry, but ${esc(partsPreview)} each exist separately — split into ${parts.length} people?</div>`;
 
       const splitBtn = document.createElement("button");
-      splitBtn.textContent = `Split into "${partA}" + "${partB}"`;
+      splitBtn.textContent = `Split into: ${partsPreview}`;
       splitBtn.style.cssText = "text-align:left; background:#1c2028; color:#89c37a; border:1px solid #2a3a26; border-radius:6px; padding:6px 8px; cursor:pointer; font-size:11.5px;";
       splitBtn.onclick = () => { box.style.display = "none"; box.innerHTML = ""; resolve(true); };
       box.appendChild(splitBtn);
@@ -785,7 +853,7 @@
     });
   }
 
-  // Resolution for one half of a confirmed split. If that half is itself
+  // Resolution for one piece of a confirmed split. If that piece is itself
   // unambiguous, resolves directly; if it's ambiguous too (e.g. multiple
   // "Christine"s), shows the same picker as the normal flow rather than
   // silently guessing the first match.
@@ -829,13 +897,14 @@
             match: chosen,
           });
         } else if (cls.verdict === "not-found") {
-          const splitInfo = await trySplitFallback(t.text);
-          if (splitInfo) {
+          const splitParts = await trySplitFallback(t.text);
+          if (splitParts) {
             onProgress(done, candidates.length, `${t.text} — possible split found, confirm in panel...`);
-            const doSplit = await promptSplitConfirm(t.text, splitInfo.partA, splitInfo.partB);
+            const doSplit = await promptSplitConfirm(t.text, splitParts);
             if (doSplit) {
-              out.push(await resolveSplitHalf(splitInfo.partA, t.role, splitInfo.matchesA));
-              out.push(await resolveSplitHalf(splitInfo.partB, t.role, splitInfo.matchesB));
+              for (const part of splitParts) {
+                out.push(await resolveSplitHalf(part.text, t.role, part.matches));
+              }
             } else {
               out.push({ kind: "candidate", text: t.text, role: t.role, verdict: "not-found", match: null });
             }
