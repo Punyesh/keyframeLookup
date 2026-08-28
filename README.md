@@ -59,6 +59,7 @@ All data comes from [KeyFrame Staff List](https://keyframe-staff-list.com), buil
 
 ## Changelog
 
+- **Firefox Support** — Firfox doesn't support long URLs for bookmarks. Added alternate panel to account for it.
 - **Credit Sheet Organizer** — a whole second mode, switchable from the same small panel. Paste a messy raw credit sheet and it verifies every name/studio live against KeyFrame, translates role headers to English (170+ Japanese/English terms recognized), prompts you to disambiguate ambiguous names (including detecting accidentally-joined names like "yaya Christine" when there's real evidence for a split), and produces a clean, Discord-formatted summary plus a shareable HTML page.
 - **One unified panel** — Lookup and the Organizer now live in the same small draggable panel instead of a separate button/page; a link at the bottom switches modes.
 - **Share as a file** — both Lookup and Organizer results can be downloaded as a real HTML page to attach to Discord or host elsewhere, since a true short link isn't something this tool can reliably provide.
