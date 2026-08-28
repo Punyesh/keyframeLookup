@@ -245,6 +245,10 @@
       return `<div class="person"><div class="error-card"><span class="q">${esc(r.query)}</span> — ${esc(r.error || "not found")}</div></div>`;
     }
     const jobs = (r.jobs || []).map((j) => `<span class="badge">${esc(j)}</span>`).join("");
+    const studioNames = Object.keys(r.studios || {});
+    const studiosHtml = studioNames.length
+      ? `<div class="studio-affiliations">Studio affiliations: ${studioNames.map((s) => esc(s)).join(", ")}</div>`
+      : "";
     const roles = r.roles || {};
     const roleNames = Object.keys(roles).sort((a, b) => roles[b].length - roles[a].length);
 
@@ -282,6 +286,7 @@
         <div class="person-head">
           <div class="person-name">${esc(r.nameEn || r.query)}${r.nameJa ? `<span class="ja">${esc(r.nameJa)}</span>` : ""}</div>
           <div class="badges">${jobs}</div>
+          ${studiosHtml}
         </div>
         <div>${rolesHtml || '<div style="padding:16px 22px; color:var(--muted); font-size:13px;">No credits listed.</div>'}</div>
       </div>
@@ -293,6 +298,10 @@
       return `<div class="person"><div class="error-card"><span class="q">${esc(r.query)}</span> — ${esc(r.error || "not found")}</div></div>`;
     }
     const jobs = (r.jobs || []).map((j) => `<span class="badge">${esc(j)}</span>`).join("");
+    const studioNames = Object.keys(r.studios || {});
+    const studiosHtml = studioNames.length
+      ? `<div class="studio-affiliations">Studio affiliations: ${studioNames.map((s) => esc(s)).join(", ")}</div>`
+      : "";
     const works = r.workGrid || [];
 
     const cardsHtml = works.map((w) => `
@@ -333,6 +342,7 @@
           <div>
             <div class="person-name">${esc(r.nameEn || r.query)}${r.nameJa ? `<span class="ja">${esc(r.nameJa)}</span>` : ""}</div>
             <div class="badges">${jobs}</div>
+            ${studiosHtml}
           </div>
           ${toggleLink}
         </div>
@@ -369,6 +379,7 @@
         .person-name { font-family:'Space Grotesk',sans-serif; font-size:18px; font-weight:700; }
         .person-name .ja { font-family:'Inter',sans-serif; font-weight:400; color:var(--muted); font-size:13px; margin-left:8px; }
         .badges { display:flex; flex-wrap:wrap; gap:6px; margin-top:9px; }
+        .studio-affiliations { font-family:'JetBrains Mono',monospace; font-size:11px; color:var(--muted); margin-top:8px; }
         .badge { font-size:11px; padding:4px 9px; border-radius:20px; background:var(--panel-2); border:1px solid var(--line); color:var(--cyan); font-family:'JetBrains Mono',monospace; }
         .role-section { border-bottom:1px solid var(--line); }
         .role-section:last-child { border-bottom:none; }
