@@ -584,7 +584,7 @@
     "総監督": "Chief Director", "chief director": "Chief Director", "general director": "Chief Director",
     "監督": "Director", "director": "Director",
     "副監督": "Assistant Director", "助監督": "Assistant Director", "assistant director": "Assistant Director", "vice director": "Assistant Director",
-    "各話演出": "Episode Director", "episode director": "Episode Director",
+    "各話演出": "Episode Director", "episode director": "Episode Director", "ed": "Episode Director",
     "演出": "Unit Director", "unit director": "Unit Director",
     "演出補佐": "Assistant Episode Director", "assistant episode director": "Assistant Episode Director", "assistant unit director": "Assistant Episode Director",
     "チーフ演出": "Chief Episode Director", "chief episode director": "Chief Episode Director",
@@ -595,13 +595,13 @@
     "脚本協力": "Script Cooperation", "script cooperation": "Script Cooperation",
     "脚本監修": "Script Supervision", "script supervision": "Script Supervision", "script supervisor": "Script Supervision",
     // Storyboard
-    "コンテ": "Storyboard", "絵コンテ": "Storyboard", "storyboard": "Storyboard", "storyboarder": "Storyboard",
+    "コンテ": "Storyboard", "絵コンテ": "Storyboard", "storyboard": "Storyboard", "storyboarder": "Storyboard", "sb": "Storyboard",
     "コンテ協力": "Storyboard Cooperation", "絵コンテ協力": "Storyboard Cooperation", "storyboard cooperation": "Storyboard Cooperation",
     // Animation direction
-    "総作画監督": "Chief Animation Director", "chief animation director": "Chief Animation Director", "general animation director": "Chief Animation Director",
+    "総作画監督": "Chief Animation Director", "chief animation director": "Chief Animation Director", "general animation director": "Chief Animation Director", "cad": "Chief Animation Director",
     "総作画監督補佐": "Assistant Chief Animation Director", "assistant chief animation director": "Assistant Chief Animation Director",
-    "作画監督": "Animation Director", "animation director": "Animation Director",
-    "作画監督補佐": "Assistant Animation Director", "assistant animation director": "Assistant Animation Director",
+    "作画監督": "Animation Director", "animation director": "Animation Director", "ad": "Animation Director",
+    "作画監督補佐": "Assistant Animation Director", "assistant animation director": "Assistant Animation Director", "ass. ad": "Assistant Animation Director", "asst. ad": "Assistant Animation Director",
     "作画監督協力": "Animation Direction Cooperation", "animation direction cooperation": "Animation Direction Cooperation",
     "作画監督補正": "Animation Direction Correction",
     "キャラクター作画監督": "Character Animation Director", "character animation director": "Character Animation Director",
@@ -611,7 +611,7 @@
     // Key / in-between animation
     "第一原画": "1st Key Animation", "1st key animation": "1st Key Animation",
     "第二原画": "2nd Key Animation", "2nd key animation": "2nd Key Animation",
-    "原画": "Key Animation", "key animation": "Key Animation",
+    "原画": "Key Animation", "key animation": "Key Animation", "ka": "Key Animation",
     "原画協力": "Key Animation Cooperation", "key animation cooperation": "Key Animation Cooperation",
     "動画": "In-Between Animation", "in-between animation": "In-Between Animation",
     "動画検査": "In-Between Check", "動画チェック": "In-Between Check", "in-between check": "In-Between Check", "in-between animation check": "In-Between Check",
@@ -675,7 +675,7 @@
     "タイムシート": "Timesheet", "timesheet": "Timesheet",
   };
 
-  function kflNorm(s) { return (s || "").trim().toLowerCase().replace(/\s+/g, ""); }
+  function kflNorm(s) { return (s || "").trim().toLowerCase().replace(/[.\s]+/g, ""); }
   const ROLE_SET = {};
   Object.keys(ROLE_MAP).forEach((k) => { ROLE_SET[kflNorm(k)] = ROLE_MAP[k]; });
   function isRoleHeader(line) { return !!ROLE_SET[kflNorm(line)]; }
@@ -683,19 +683,21 @@
 
   // Unified tokenizer -- works the same regardless of raw-text format
   // (role on its own line, "role： names" inline, "role names" inline with
-  // just a space, or any mix of these within one paste). Colons are
-  // normalized to whitespace so every format reduces to the same "stream of
-  // words" representation. Role terms are detected by matching words/short
-  // phrases against the dictionary directly, checking up to 4 words at a
-  // time (covers multi-word English terms like "chief animation director")
-  // -- there's no assumption about which line a role sits on or what
-  // separates it from names. Everything that isn't a recognized role
-  // becomes a "namebuffer": the actual person/studio boundaries within it
-  // are NOT guessed from whitespace count here -- that's resolved later via
-  // live search verification (see verifyTokens/resolveNameBuffer), which is
-  // far more reliable than any text-shape heuristic. Line boundaries are
-  // still used to flush buffers, since studios and name-pairs are reliably
-  // one-per-line even when role labels aren't.
+  // just a space, "role: name, name, name" comma-separated, or any mix of
+  // these within one paste). Colons are normalized to whitespace so every
+  // format reduces to the same "stream of words" representation. Commas are
+  // treated as a DEFINITIVE person/studio boundary (unlike plain whitespace,
+  // which is ambiguous) -- each comma-separated segment becomes its own
+  // buffer, never merged with its neighbors. Role terms are detected by
+  // matching words/short phrases against the dictionary, checking up to 4
+  // words at a time (covers multi-word English terms and abbreviations like
+  // "chief animation director" / "CAD"). Everything that isn't a recognized
+  // role becomes a "namebuffer": the actual person/studio boundaries within
+  // it (when there's no comma to rely on) are NOT guessed from whitespace
+  // count -- that's resolved later via live search verification (see
+  // verifyTokens/trySplitFallback), which is far more reliable than any
+  // text-shape heuristic. Line boundaries still flush buffers, since studios
+  // and name-pairs are reliably one-per-line even when role labels aren't.
   function parseCreditSheet(raw) {
     const lines = raw.split("\n").map((l) => l.trim()).filter(Boolean);
     const tokens = [];
@@ -703,38 +705,42 @@
 
     lines.forEach((line) => {
       const normalizedLine = line.replace(/[：:]/g, " ");
-      const words = normalizedLine.split(/\s+/).map((w) => w.trim()).filter(Boolean);
+      const commaSegments = normalizedLine.split(",").map((s) => s.trim()).filter(Boolean);
 
-      let buffer = [];
-      const flushBuffer = () => {
-        if (buffer.length === 0) return;
-        tokens.push({ kind: "namebuffer", text: buffer.join(" "), role: currentRole });
-        buffer = [];
-      };
+      commaSegments.forEach((segment) => {
+        const words = segment.split(/\s+/).map((w) => w.trim()).filter(Boolean);
 
-      let i = 0;
-      while (i < words.length) {
-        let matchedRole = null;
-        let matchedLen = 0;
-        for (let len = Math.min(4, words.length - i); len >= 1; len--) {
-          const phrase = words.slice(i, i + len).join(" ");
-          if (isRoleHeader(phrase)) {
-            matchedRole = roleLabel(phrase);
-            matchedLen = len;
-            break;
+        let buffer = [];
+        const flushBuffer = () => {
+          if (buffer.length === 0) return;
+          tokens.push({ kind: "namebuffer", text: buffer.join(" "), role: currentRole });
+          buffer = [];
+        };
+
+        let i = 0;
+        while (i < words.length) {
+          let matchedRole = null;
+          let matchedLen = 0;
+          for (let len = Math.min(4, words.length - i); len >= 1; len--) {
+            const phrase = words.slice(i, i + len).join(" ");
+            if (isRoleHeader(phrase)) {
+              matchedRole = roleLabel(phrase);
+              matchedLen = len;
+              break;
+            }
+          }
+          if (matchedRole) {
+            flushBuffer();
+            currentRole = matchedRole;
+            tokens.push({ kind: "role", text: currentRole });
+            i += matchedLen;
+          } else {
+            buffer.push(words[i]);
+            i += 1;
           }
         }
-        if (matchedRole) {
-          flushBuffer();
-          currentRole = matchedRole;
-          tokens.push({ kind: "role", text: currentRole });
-          i += matchedLen;
-        } else {
-          buffer.push(words[i]);
-          i += 1;
-        }
-      }
-      flushBuffer(); // flush at end of each line -- keeps studios/pairs from merging across lines
+        flushBuffer(); // flush at end of each comma segment -- keeps names from merging across commas
+      });
     });
 
     return tokens;
@@ -897,19 +903,54 @@
             match: chosen,
           });
         } else if (cls.verdict === "not-found") {
-          const splitParts = await trySplitFallback(t.text);
-          if (splitParts) {
-            onProgress(done, buffers.length, `${t.text} — possible split found, confirm in panel...`);
-            const doSplit = await promptSplitConfirm(t.text, splitParts);
-            if (doSplit) {
-              for (const part of splitParts) {
-                out.push(await resolveSplitHalf(part.text, t.role, part.matches));
+          // KeyFrame likely stores Japanese names with no internal space
+          // (e.g. "山下悟"), while raw sheets often write them with one
+          // ("山下 悟"). Before assuming this is several different people
+          // joined together, try the same text with spaces removed -- if
+          // that resolves, it's one person, not a split.
+          let noSpaceResolved = false;
+          if (/\s/.test(t.text)) {
+            const noSpaceText = t.text.replace(/\s+/g, "");
+            try {
+              const res2 = await fetch(`/api/search/?q=${encodeURIComponent(noSpaceText)}&type=all`, { credentials: "include" });
+              const body2 = res2.ok ? await res2.json() : null;
+              const matches2 = (body2 && body2.staff) || [];
+              const cls2 = classifyMatch(noSpaceText, matches2);
+              if (cls2.verdict === "studio" || cls2.verdict === "person-exact" || cls2.verdict === "person-diff") {
+                out.push({ kind: "candidate", text: t.text, role: t.role, verdict: cls2.verdict, match: cls2.match });
+                noSpaceResolved = true;
+              } else if (cls2.verdict === "ambiguous") {
+                onProgress(done, buffers.length, `${t.text} — pick a match in the panel...`);
+                const chosen2 = await promptForOrgMatch(t.text, cls2.candidates);
+                out.push({
+                  kind: "candidate", text: t.text, role: t.role,
+                  verdict: chosen2 ? "person-diff" : "not-found",
+                  match: chosen2,
+                });
+                noSpaceResolved = true;
+              }
+            } catch (e) {
+              // fall through to the split-fallback path below
+            }
+          }
+
+          if (noSpaceResolved) {
+            // handled above
+          } else {
+            const splitParts = await trySplitFallback(t.text);
+            if (splitParts) {
+              onProgress(done, buffers.length, `${t.text} — possible split found, confirm in panel...`);
+              const doSplit = await promptSplitConfirm(t.text, splitParts);
+              if (doSplit) {
+                for (const part of splitParts) {
+                  out.push(await resolveSplitHalf(part.text, t.role, part.matches));
+                }
+              } else {
+                out.push({ kind: "candidate", text: t.text, role: t.role, verdict: "not-found", match: null });
               }
             } else {
               out.push({ kind: "candidate", text: t.text, role: t.role, verdict: "not-found", match: null });
             }
-          } else {
-            out.push({ kind: "candidate", text: t.text, role: t.role, verdict: "not-found", match: null });
           }
         } else {
           out.push({ kind: "candidate", text: t.text, role: t.role, verdict: cls.verdict, match: cls.match });
