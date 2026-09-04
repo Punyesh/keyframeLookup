@@ -681,73 +681,62 @@
   function isRoleHeader(line) { return !!ROLE_SET[kflNorm(line)]; }
   function roleLabel(line) { return ROLE_SET[kflNorm(line)] || line; }
 
-  // Handles lines like "脚本： 高山淳史 コンテ： 山下 悟 宇和野歩 渋谷亮介" --
-  // multiple role labels and their names crammed onto one line, separated
-  // by full-width or half-width colons, instead of one role per line. Splits
-  // on colons, then finds the role-term trailing each "names" segment (that
-  // trailing term is actually the NEXT role's label). Returns null if the
-  // line has no colon at all (not this format).
-  function parseInlineRoleLine(line) {
-    const parts = line.split(/[：:]/).map((s) => s.trim()).filter((s) => s !== "");
-    if (parts.length < 2) return null;
-
-    const result = [];
-    let currentRoleLabel = parts[0];
-    for (let i = 1; i < parts.length; i++) {
-      const segment = parts[i];
-      const isLast = i === parts.length - 1;
-      if (isLast) {
-        result.push({ role: currentRoleLabel, namesText: segment });
-      } else {
-        const words = segment.split(/\s+/);
-        let splitIndex = words.length;
-        let foundRole = null;
-        for (let wlen = Math.min(3, words.length); wlen >= 1; wlen--) {
-          const candidateRole = words.slice(words.length - wlen).join("");
-          if (isRoleHeader(candidateRole)) {
-            foundRole = candidateRole;
-            splitIndex = words.length - wlen;
-            break;
-          }
-        }
-        const namesText = words.slice(0, splitIndex).join(" ");
-        result.push({ role: currentRoleLabel, namesText });
-        currentRoleLabel = foundRole || segment; // fallback avoids losing data if no role term found
-      }
-    }
-    return result;
-  }
-
+  // Unified tokenizer -- works the same regardless of raw-text format
+  // (role on its own line, "role： names" inline, "role names" inline with
+  // just a space, or any mix of these within one paste). Colons are
+  // normalized to whitespace so every format reduces to the same "stream of
+  // words" representation. Role terms are detected by matching words/short
+  // phrases against the dictionary directly, checking up to 4 words at a
+  // time (covers multi-word English terms like "chief animation director")
+  // -- there's no assumption about which line a role sits on or what
+  // separates it from names. Everything that isn't a recognized role
+  // becomes a "namebuffer": the actual person/studio boundaries within it
+  // are NOT guessed from whitespace count here -- that's resolved later via
+  // live search verification (see verifyTokens/resolveNameBuffer), which is
+  // far more reliable than any text-shape heuristic. Line boundaries are
+  // still used to flush buffers, since studios and name-pairs are reliably
+  // one-per-line even when role labels aren't.
   function parseCreditSheet(raw) {
     const lines = raw.split("\n").map((l) => l.trim()).filter(Boolean);
     const tokens = [];
     let currentRole = null;
+
     lines.forEach((line) => {
-      if (isRoleHeader(line)) {
-        currentRole = roleLabel(line);
-        tokens.push({ kind: "role", text: currentRole });
-        return;
-      }
+      const normalizedLine = line.replace(/[：:]/g, " ");
+      const words = normalizedLine.split(/\s+/).map((w) => w.trim()).filter(Boolean);
 
-      const inline = parseInlineRoleLine(line);
-      if (inline) {
-        inline.forEach(({ role, namesText }) => {
-          const label = roleLabel(role);
-          tokens.push({ kind: "role", text: label });
-          currentRole = label;
-          const parts = namesText.split(/\s{2,}/).map((p) => p.trim()).filter(Boolean);
-          parts.forEach((part) => {
-            tokens.push({ kind: "candidate", text: part, role: currentRole });
-          });
-        });
-        return;
-      }
+      let buffer = [];
+      const flushBuffer = () => {
+        if (buffer.length === 0) return;
+        tokens.push({ kind: "namebuffer", text: buffer.join(" "), role: currentRole });
+        buffer = [];
+      };
 
-      const parts = line.split(/\s{2,}/).map((p) => p.trim()).filter(Boolean);
-      parts.forEach((part) => {
-        tokens.push({ kind: "candidate", text: part, role: currentRole });
-      });
+      let i = 0;
+      while (i < words.length) {
+        let matchedRole = null;
+        let matchedLen = 0;
+        for (let len = Math.min(4, words.length - i); len >= 1; len--) {
+          const phrase = words.slice(i, i + len).join(" ");
+          if (isRoleHeader(phrase)) {
+            matchedRole = roleLabel(phrase);
+            matchedLen = len;
+            break;
+          }
+        }
+        if (matchedRole) {
+          flushBuffer();
+          currentRole = matchedRole;
+          tokens.push({ kind: "role", text: currentRole });
+          i += matchedLen;
+        } else {
+          buffer.push(words[i]);
+          i += 1;
+        }
+      }
+      flushBuffer(); // flush at end of each line -- keeps studios/pairs from merging across lines
     });
+
     return tokens;
   }
 
@@ -886,13 +875,13 @@
 
   async function verifyTokens(tokens, onProgress) {
     const out = [];
-    const candidates = tokens.filter((t) => t.kind === "candidate");
+    const buffers = tokens.filter((t) => t.kind === "namebuffer");
     let done = 0;
     for (let i = 0; i < tokens.length; i++) {
       const t = tokens[i];
       if (t.kind === "role") { out.push(t); continue; }
       done++;
-      onProgress(done, candidates.length, t.text);
+      onProgress(done, buffers.length, t.text);
       try {
         const res = await fetch(`/api/search/?q=${encodeURIComponent(t.text)}&type=all`, { credentials: "include" });
         const body = res.ok ? await res.json() : null;
@@ -900,7 +889,7 @@
         const cls = classifyMatch(t.text, matches);
 
         if (cls.verdict === "ambiguous") {
-          onProgress(done, candidates.length, `${t.text} — pick a match in the panel...`);
+          onProgress(done, buffers.length, `${t.text} — pick a match in the panel...`);
           const chosen = await promptForOrgMatch(t.text, cls.candidates);
           out.push({
             kind: "candidate", text: t.text, role: t.role,
@@ -910,7 +899,7 @@
         } else if (cls.verdict === "not-found") {
           const splitParts = await trySplitFallback(t.text);
           if (splitParts) {
-            onProgress(done, candidates.length, `${t.text} — possible split found, confirm in panel...`);
+            onProgress(done, buffers.length, `${t.text} — possible split found, confirm in panel...`);
             const doSplit = await promptSplitConfirm(t.text, splitParts);
             if (doSplit) {
               for (const part of splitParts) {
