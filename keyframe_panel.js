@@ -1118,6 +1118,9 @@
     for (const roleObj of roles || []) {
       for (const group of roleObj.groups || []) {
         for (const person of group.people || []) {
+          // The organizer stores the exact same profile result produced by the
+          // normal Lookup pipeline on each verified person. Reuse it directly
+          // instead of issuing another history lookup when exporting HTML.
           const result = person && person.lookupResult;
           if (!result || !result.found) continue;
           const key = profileCacheKey(result.id != null ? result.id : result.nameEn || result.query);
