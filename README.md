@@ -38,9 +38,9 @@ Already-looked-up names are cached in memory for the session — adding a name t
 
 1. In the panel, click **📋 Switch to Credit Sheet Organizer** at the bottom (same small panel, different mode — click **🔍 Switch to Lookup** to go back).
 2. Paste your raw credit sheet text and click **Parse & Verify**.
-3. It works through every name and studio one at a time against KeyFrame's live search — role headers get translated to English automatically, and studios are detected the same way (never guessed from text shape). Repeated search variants are reused from the session cache so the organizer does not re-request the same candidate list.
+3. It works through every name and studio one at a time against KeyFrame's live search — role headers get translated to English automatically, and studios are detected the same way (never guessed from text shape).
 4. If a name matches multiple different people, a picker pauses the process so you can choose. Names that look like two people accidentally joined on one line (no way to detect that from text shape alone) get double-checked — if both halves independently exist on KeyFrame, you're asked whether to split them.
-5. Results open in a second small side-panel: reviewed names with spelling toggles (KeyFrame's English name is used by default, click to revert to as-typed), a live Discord-formatted summary, and **Copy Markdown**. **View as Page** / **Download HTML** opens the same rich results format used by Lookup, including each matched staff member's full credit history, role breakdown, cover art, years, studios, and episode information.
+5. Results open in a second small side-panel: reviewed names with spelling toggles (KeyFrame's English name is used by default, click to revert to as-typed), a live Discord-formatted summary, and **Copy Markdown** / **View as Page** / **Download HTML** to share.
 
 ## Sharing
 

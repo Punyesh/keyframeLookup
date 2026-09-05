@@ -75,34 +75,17 @@
   }
 
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-  const DELAY_MS = 3000; // between lookups, per KeyFrame's scraping policy
+  const DELAY_MS = 1500; // between uncached lookups, keeping request volume spaced while making larger lists less painful
   const VERIFY_DELAY_MS = 1000; // lighter delay for the organizer's search-only calls
 
   // Cache of already-fetched lookup results, keyed by normalized name.
   // Persists for as long as this panel stays open.
   const cache = {};
+  const searchCache = {}; // normalized query -> search matches / error
+  const profileCache = {}; // stable staff id -> fetched profile result
   const cacheKey = (name) => name.trim().toLowerCase();
-
-  // Organizer search cache. The organizer may need to check the same text
-  // more than once (or check a no-space/split variant that was already seen).
-  // Reusing the live search response avoids duplicate network requests without
-  // changing the request pacing for genuinely new names.
-  const organizerSearchCache = new Map();
-  async function searchOrganizerCandidates(text) {
-    const key = (text || "").trim().toLowerCase();
-    if (organizerSearchCache.has(key)) return organizerSearchCache.get(key);
-
-    let matches = [];
-    try {
-      const res = await fetch(`/api/search/?q=${encodeURIComponent(text)}&type=all`, { credentials: "include" });
-      const body = res.ok ? await res.json() : null;
-      matches = (body && body.staff) || [];
-    } catch (e) {
-      matches = [];
-    }
-    organizerSearchCache.set(key, matches);
-    return matches;
-  }
+  const searchCacheKey = (name) => name.trim().replace(/\s+/g, " ").toLowerCase();
+  const profileCacheKey = (staffId) => String(staffId);
 
   const log = (msg) => {
     const el = document.getElementById("kfl-log");
@@ -190,14 +173,28 @@
   }
 
   async function searchName(name) {
+    const key = searchCacheKey(name);
+    if (searchCache[key]) return searchCache[key];
+
     const searchRes = await fetch(`/api/search/?q=${encodeURIComponent(name)}&type=all`, { credentials: "include" });
-    if (!searchRes.ok) return { error: `Search failed (status ${searchRes.status})` };
+    if (!searchRes.ok) {
+      const result = { error: `Search failed (status ${searchRes.status})` };
+      searchCache[key] = result;
+      return result;
+    }
     const matches = (await searchRes.json()).staff || [];
-    if (matches.length === 0) return { error: "No matching staff found" };
-    return { matches };
+    const result = matches.length === 0 ? { error: "No matching staff found" } : { matches };
+    searchCache[key] = result;
+    return result;
   }
 
   async function fetchProfile(name, staffId, allMatches) {
+    const key = profileCacheKey(staffId);
+    if (profileCache[key]) {
+      const cached = { ...profileCache[key], query: name, allSearchMatches: allMatches };
+      return cached;
+    }
+
     const result = { query: name, found: false, allSearchMatches: allMatches };
 
     const profileRes = await fetch(`/api/person/show.php?id=${staffId}&type=person`, { credentials: "include" });
@@ -216,6 +213,7 @@
     result.roles = buildRoleGroups(credits);
     result.workGrid = buildWorkGrid(credits);
 
+    profileCache[key] = { ...result, query: undefined, allSearchMatches: undefined };
     return result;
   }
 
@@ -861,7 +859,13 @@
       let matched = false;
       for (let len = remaining.length; len >= 1; len--) {
         const candidate = remaining.slice(0, len).join(" ");
-        const matches = await searchOrganizerCandidates(candidate);
+        let matches = [];
+        try {
+          const searchResult = await searchName(candidate);
+          matches = searchResult.matches || [];
+        } catch (e) {
+          matches = [];
+        }
         if (matches.length > 0) {
           parts.push({ text: candidate, matches });
           remaining = remaining.slice(len);
@@ -896,80 +900,104 @@
     });
   }
 
+  function staffIdFromMatch(match) {
+    if (!match) return null;
+    if (match.anilist_id != null) return match.anilist_id;
+    if (match.ja) return "ja:" + encodeURIComponent(match.ja);
+    if (match.en) return "en:" + encodeURIComponent(match.en);
+    return null;
+  }
+
+  async function makeOrgCandidate(text, role, verdict, match, allMatches) {
+    let lookupResult = null;
+    if (match && !match.is_studio && (verdict === "person-exact" || verdict === "person-diff")) {
+      const staffId = staffIdFromMatch(match);
+      if (staffId != null) {
+        lookupResult = await fetchProfile(text, staffId, allMatches || [{
+          id: match.anilist_id, en: match.en, ja: match.ja, jobs: match.jobs, isStudio: !!match.is_studio,
+        }]);
+      }
+    }
+    return { kind: "candidate", text, role, verdict, match: match || null, lookupResult };
+  }
+
   // Resolution for one piece of a confirmed split. If that piece is itself
   // unambiguous, resolves directly; if it's ambiguous too (e.g. multiple
   // "Christine"s), shows the same picker as the normal flow rather than
   // silently guessing the first match.
   async function resolveSplitHalf(text, role, matches) {
     const cls = classifyMatch(text, matches);
+    const allMatches = matches.map((m) => ({
+      id: m.anilist_id, en: m.en, ja: m.ja, jobs: m.jobs, isStudio: !!m.is_studio,
+    }));
     if (cls.verdict === "studio" || cls.verdict === "person-exact" || cls.verdict === "person-diff") {
-      return { kind: "candidate", text, role, verdict: cls.verdict, match: cls.match };
+      return makeOrgCandidate(text, role, cls.verdict, cls.match, allMatches);
     }
     if (cls.verdict === "ambiguous") {
       const chosen = await promptForOrgMatch(text, cls.candidates);
-      return {
-        kind: "candidate", text, role,
-        verdict: chosen ? "person-diff" : "not-found",
-        match: chosen,
-      };
+      return makeOrgCandidate(text, role, chosen ? "person-diff" : "not-found", chosen, chosen ? [{
+        id: chosen.anilist_id, en: chosen.en, ja: chosen.ja, jobs: chosen.jobs, isStudio: !!chosen.is_studio,
+      }] : []);
     }
-    return { kind: "candidate", text, role, verdict: "not-found", match: null };
+    return makeOrgCandidate(text, role, "not-found", null, allMatches);
   }
 
   async function verifyTokens(tokens, onProgress) {
     const out = [];
     const buffers = tokens.filter((t) => t.kind === "namebuffer");
     let done = 0;
+    let lastNetworkLookupAt = 0;
     for (let i = 0; i < tokens.length; i++) {
       const t = tokens[i];
       if (t.kind === "role") { out.push(t); continue; }
       done++;
       onProgress(done, buffers.length, t.text);
+      const waitForSpacing = Math.max(0, VERIFY_DELAY_MS - (Date.now() - lastNetworkLookupAt));
+      if (lastNetworkLookupAt && waitForSpacing) await sleep(waitForSpacing);
       try {
-        const matches = await searchOrganizerCandidates(t.text);
+        const searchResult = await searchName(t.text);
+        const matches = searchResult.matches || [];
+        if (searchResult.matches || searchResult.error) lastNetworkLookupAt = Date.now();
         const cls = classifyMatch(t.text, matches);
+        const allMatches = matches.map((m) => ({
+          id: m.anilist_id, en: m.en, ja: m.ja, jobs: m.jobs, isStudio: !!m.is_studio,
+        }));
 
         if (cls.verdict === "ambiguous") {
           onProgress(done, buffers.length, `${t.text} — pick a match in the panel...`);
           const chosen = await promptForOrgMatch(t.text, cls.candidates);
-          out.push({
-            kind: "candidate", text: t.text, role: t.role,
-            verdict: chosen ? "person-diff" : "not-found",
-            match: chosen,
-          });
+          out.push(await makeOrgCandidate(
+            t.text, t.role, chosen ? "person-diff" : "not-found", chosen,
+            chosen ? [{ id: chosen.anilist_id, en: chosen.en, ja: chosen.ja, jobs: chosen.jobs, isStudio: !!chosen.is_studio }] : allMatches
+          ));
         } else if (cls.verdict === "not-found") {
-          // KeyFrame likely stores Japanese names with no internal space
-          // (e.g. "山下悟"), while raw sheets often write them with one
-          // ("山下 悟"). Before assuming this is several different people
-          // joined together, try the same text with spaces removed -- if
-          // that resolves, it's one person, not a split.
           let noSpaceResolved = false;
           if (/\s/.test(t.text)) {
             const noSpaceText = t.text.replace(/\s+/g, "");
             try {
-              const matches2 = await searchOrganizerCandidates(noSpaceText);
+              const searchResult2 = await searchName(noSpaceText);
+              const matches2 = searchResult2.matches || [];
+              lastNetworkLookupAt = Date.now();
               const cls2 = classifyMatch(noSpaceText, matches2);
+              const allMatches2 = matches2.map((m) => ({
+                id: m.anilist_id, en: m.en, ja: m.ja, jobs: m.jobs, isStudio: !!m.is_studio,
+              }));
               if (cls2.verdict === "studio" || cls2.verdict === "person-exact" || cls2.verdict === "person-diff") {
-                out.push({ kind: "candidate", text: t.text, role: t.role, verdict: cls2.verdict, match: cls2.match });
+                out.push(await makeOrgCandidate(t.text, t.role, cls2.verdict, cls2.match, allMatches2));
                 noSpaceResolved = true;
               } else if (cls2.verdict === "ambiguous") {
                 onProgress(done, buffers.length, `${t.text} — pick a match in the panel...`);
                 const chosen2 = await promptForOrgMatch(t.text, cls2.candidates);
-                out.push({
-                  kind: "candidate", text: t.text, role: t.role,
-                  verdict: chosen2 ? "person-diff" : "not-found",
-                  match: chosen2,
-                });
+                out.push(await makeOrgCandidate(
+                  t.text, t.role, chosen2 ? "person-diff" : "not-found", chosen2,
+                  chosen2 ? [{ id: chosen2.anilist_id, en: chosen2.en, ja: chosen2.ja, jobs: chosen2.jobs, isStudio: !!chosen2.is_studio }] : allMatches2
+                ));
                 noSpaceResolved = true;
               }
-            } catch (e) {
-              // fall through to the split-fallback path below
-            }
+            } catch (e) {}
           }
 
-          if (noSpaceResolved) {
-            // handled above
-          } else {
+          if (!noSpaceResolved) {
             const splitParts = await trySplitFallback(t.text);
             if (splitParts) {
               onProgress(done, buffers.length, `${t.text} — possible split found, confirm in panel...`);
@@ -979,25 +1007,17 @@
                   out.push(await resolveSplitHalf(part.text, t.role, part.matches));
                 }
               } else {
-                out.push({ kind: "candidate", text: t.text, role: t.role, verdict: "not-found", match: null });
+                out.push(await makeOrgCandidate(t.text, t.role, "not-found", null, allMatches));
               }
             } else {
-              out.push({ kind: "candidate", text: t.text, role: t.role, verdict: "not-found", match: null });
+              out.push(await makeOrgCandidate(t.text, t.role, "not-found", null, allMatches));
             }
           }
         } else {
-          out.push({ kind: "candidate", text: t.text, role: t.role, verdict: cls.verdict, match: cls.match });
+          out.push(await makeOrgCandidate(t.text, t.role, cls.verdict, cls.match, allMatches));
         }
       } catch (e) {
-        out.push({ kind: "candidate", text: t.text, role: t.role, verdict: "error", match: null });
-      }
-      // Role-header tokens do not issue a network request, so there is no
-      // reason to spend a pacing interval on them. Keep the delay between
-      // actual candidate lookups, preserving the organizer's conservative
-      // request cadence for the site.
-      if (t.kind === "namebuffer" && i < tokens.length - 1) {
-        const nextCandidateExists = tokens.slice(i + 1).some((next) => next.kind === "namebuffer");
-        if (nextCandidateExists) await sleep(VERIFY_DELAY_MS);
+        out.push(await makeOrgCandidate(t.text, t.role, "error", null, []));
       }
     }
     return out;
@@ -1030,7 +1050,7 @@
       }
       if (t.verdict === "studio") {
         const studioName = t.match ? (t.match.en || t.match.ja || t.text) : t.text;
-        currentGroup = { studio: studioName, studioMatch: t.match || null, people: [] };
+        currentGroup = { studio: studioName, people: [] };
         currentRoleObj.groups.push(currentGroup);
         return;
       }
@@ -1042,6 +1062,7 @@
         official: official,
         chosen: official ? "official" : "original",
         match: t.match || null,
+        lookupResult: t.lookupResult || null,
       });
     });
     return roles;
@@ -1091,53 +1112,22 @@
   // Full standalone HTML document -- real, selectable DOM (not a rasterized
   // image). Used by "View as Page" (opens in a new tab) and "Download HTML"
   // (saves as a portable file you can host, embed, or attach anywhere).
-  function buildSharePage(roles) {
-    let body = "";
-    roles.forEach((roleObj) => {
-      const hasContent = roleObj.groups.some((g) => g.people.length > 0);
-      if (!hasContent) return;
-      body += `<div class="role-block"><div class="role-name">${esc(roleObj.role)}</div>`;
-      roleObj.groups.forEach((g) => {
-        if (g.people.length === 0) return;
-        if (g.studio) body += `<div class="studio-label">🏢 ${esc(g.studio)}</div>`;
-        body += `<div class="chip-row">`;
-        g.people.forEach((p) => {
-          const name = p.chosen === "official" && p.official ? p.official : p.original;
-          const notFound = p.verdict === "not-found";
-          body += `<span class="chip${notFound ? " not-found" : ""}">${esc(name)}${notFound ? ' <span class="q">?</span>' : ""}</span>`;
-        });
-        body += `</div>`;
-      });
-      body += `</div>`;
-    });
-
-    return `<!DOCTYPE html><html><head><meta charset="UTF-8"><title>Credit Sheet</title>
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
-<link rel="icon" href="data:image/svg+xml,${encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32"><defs><pattern id="s" width="8" height="8" patternTransform="rotate(45)" patternUnits="userSpaceOnUse"><rect width="8" height="8" fill="#f5a623"/><rect width="4" height="8" fill="#111111"/></pattern></defs><rect width="32" height="32" rx="6" fill="url(#s)"/></svg>')}">
-<style>
-:root{--bg:#0b0d10;--panel:#15181d;--line:#262b33;--text:#e8e6e1;--muted:#8a8f98;--amber:#f5a623;--cyan:#4fd1c5;--red:#e06c75;}
-*{box-sizing:border-box;}
-body{margin:0;background:var(--bg);color:var(--text);font-family:Inter,sans-serif;min-height:100vh;}
-.wrap{max-width:760px;margin:0 auto;padding:40px 24px 60px;}
-.header{display:flex;align-items:center;gap:14px;margin-bottom:28px;padding-bottom:20px;border-bottom:1px solid var(--line);}
-.mark{width:32px;height:32px;background:repeating-linear-gradient(45deg,var(--amber),var(--amber) 6px,#111 6px,#111 12px);border-radius:5px;flex-shrink:0;}
-.title{font-family:Space Grotesk,sans-serif;font-weight:700;font-size:22px;}
-.role-block{margin-bottom:24px;}
-.role-name{font-family:Space Grotesk,sans-serif;font-weight:700;font-size:15px;color:var(--amber);margin-bottom:10px;}
-.studio-label{font-family:JetBrains Mono,monospace;font-size:11.5px;color:var(--cyan);margin:10px 0 6px;}
-.chip-row{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:4px;}
-.chip{background:var(--panel);border:1px solid var(--line);border-radius:6px;padding:6px 12px;font-size:13px;}
-.chip.not-found{opacity:.6;}
-.chip .q{color:var(--red);font-size:10px;}
-.footer{margin-top:24px;padding-top:16px;border-top:1px solid var(--line);font-family:JetBrains Mono,monospace;font-size:11px;color:var(--muted);}
-.footer a{color:var(--amber);}
-</style></head><body>
-<div class="wrap">
-<div class="header"><div class="mark"></div><div class="title">Credit Sheet</div></div>
-${body}
-<div class="footer">Verified via <a href="https://keyframe-staff-list.com" target="_blank">KeyFrame Staff List</a></div>
-</div></body></html>`;
+  function buildOrganizerResults(roles) {
+    const seen = {};
+    const results = [];
+    for (const roleObj of roles || []) {
+      for (const group of roleObj.groups || []) {
+        for (const person of group.people || []) {
+          const result = person && person.lookupResult;
+          if (!result || !result.found) continue;
+          const key = profileCacheKey(result.id != null ? result.id : result.nameEn || result.query);
+          if (seen[key]) continue;
+          seen[key] = true;
+          results.push(result);
+        }
+      }
+    }
+    return buildResultsPage(results);
   }
 
   let kflOrgData = null;
@@ -1177,87 +1167,6 @@ ${body}
       html += `</div>`;
     });
     return html || `<div style="color:#8a8f98; padding:16px 0; font-size:12.5px;">Nothing parsed — check the pasted text.</div>`;
-  }
-
-  // Converts the organizer's verified people into the same result shape used
-  // by the normal Lookup results page. History is deliberately fetched only
-  // when the user asks for the rich HTML view, so Parse & Verify remains a
-  // search-only operation and does not double the number of requests.
-  const organizerProfileCache = new Map();
-
-  function staffIdFromMatch(match) {
-    if (!match) return null;
-    if (match.anilist_id != null) return match.anilist_id;
-    if (match.ja) return "ja:" + encodeURIComponent(match.ja);
-    if (match.en) return "en:" + encodeURIComponent(match.en);
-    return null;
-  }
-
-  function collectOrganizerPeople(roles) {
-    const people = [];
-    const seen = new Set();
-
-    roles.forEach((roleObj) => {
-      roleObj.groups.forEach((group) => {
-        group.people.forEach((person) => {
-          if (!person.match || person.match.is_studio) return;
-          const id = person.match.anilist_id != null
-            ? `id:${person.match.anilist_id}`
-            : `name:${person.match.ja || person.match.en || person.original}`.toLowerCase();
-          if (seen.has(id)) return;
-          seen.add(id);
-          people.push(person);
-        });
-      });
-    });
-    return people;
-  }
-
-  async function buildOrganizerLookupResults(roles, onProgress) {
-    const people = collectOrganizerPeople(roles);
-    const results = [];
-    for (let i = 0; i < people.length; i++) {
-      const person = people[i];
-      const match = person.match;
-      const key = match && match.anilist_id != null
-        ? `id:${match.anilist_id}`
-        : `name:${(match && (match.ja || match.en)) || person.original}`.toLowerCase();
-      onProgress(i + 1, people.length, person.original);
-
-      if (organizerProfileCache.has(key)) {
-        results.push(organizerProfileCache.get(key));
-        continue;
-      }
-
-      const staffId = staffIdFromMatch(match);
-      if (staffId == null) {
-        const failed = {
-          query: person.original,
-          found: false,
-          error: "Chosen match had no id or name to look up",
-        };
-        organizerProfileCache.set(key, failed);
-        results.push(failed);
-        continue;
-      }
-
-      try {
-        const result = await fetchProfile(person.original, staffId, []);
-        organizerProfileCache.set(key, result);
-        results.push(result);
-      } catch (e) {
-        const failed = {
-          query: person.original,
-          found: false,
-          error: String(e),
-        };
-        organizerProfileCache.set(key, failed);
-        results.push(failed);
-      }
-
-      if (i < people.length - 1) await sleep(VERIFY_DELAY_MS);
-    }
-    return results;
   }
 
   function showOrgResultsPanel(roles) {
@@ -1327,62 +1236,42 @@ ${body}
       });
     };
 
-    async function getOrganizerRichResults(actionLabel) {
-      if (!kflOrgData) return null;
-      const viewBtn = document.getElementById("korg-viewpage");
-      const saveBtn = document.getElementById("korg-savehtml");
-      const originalView = viewBtn ? viewBtn.textContent : "";
-      const originalSave = saveBtn ? saveBtn.textContent : "";
-      if (viewBtn) { viewBtn.disabled = true; viewBtn.textContent = "⏳ Loading staff history…"; }
-      if (saveBtn) { saveBtn.disabled = true; saveBtn.textContent = "⏳ Loading staff history…"; }
-
-      try {
-        const rich = await buildOrganizerLookupResults(kflOrgData, (done, total, name) => {
-          orgLog(`Loading staff history ${done}/${total}: ${name}`);
-        });
-        orgLog(`Loaded history for ${rich.filter((r) => r.found).length}/${rich.length} staff entries.`);
-        return rich;
-      } finally {
-        if (viewBtn) { viewBtn.disabled = false; viewBtn.textContent = originalView; }
-        if (saveBtn) { saveBtn.disabled = false; saveBtn.textContent = originalSave; }
-      }
-    }
-
     document.getElementById("korg-viewpage").onclick = async () => {
-      const win = window.open("", "_blank");
-      if (!win) { alert("Popup blocked — allow popups for this site and try again."); return; }
-      win.document.write("<!DOCTYPE html><html><body style='background:#0b0d10;color:#e8e6e1;font-family:Inter,Arial,sans-serif;padding:40px'><p>Loading staff history…</p></body></html>");
-      win.document.close();
-
+      const btn = document.getElementById("korg-viewpage");
+      const old = btn.textContent;
+      btn.disabled = true;
+      btn.textContent = "Loading staff history...";
       try {
-        const richResults = await getOrganizerRichResults("view");
-        if (!richResults) { win.close(); return; }
-        win.document.open();
-        win.document.write(buildResultsPage(richResults));
+        const html = buildOrganizerResults(kflOrgData);
+        const win = window.open("", "_blank");
+        if (!win) { alert("Popup blocked — allow popups for this site and try again."); return; }
+        win.document.write(html);
         win.document.close();
-      } catch (e) {
-        win.document.open();
-        win.document.write(`<p style="font-family:Arial;color:#e06c75;padding:40px">Failed to build results: ${esc(String(e))}</p>`);
-        win.document.close();
+      } finally {
+        btn.disabled = false;
+        btn.textContent = old;
       }
     };
 
     document.getElementById("korg-savehtml").onclick = async () => {
+      const btn = document.getElementById("korg-savehtml");
+      const old = btn.textContent;
+      btn.disabled = true;
+      btn.textContent = "Preparing HTML...";
       try {
-        const richResults = await getOrganizerRichResults("download");
-        if (!richResults) return;
-        const html = buildResultsPage(richResults);
+        const html = buildOrganizerResults(kflOrgData);
         const blob = new Blob([html], { type: "text/html" });
         const url = URL.createObjectURL(blob);
         const a = document.createElement("a");
         a.href = url;
-        a.download = "keyframe_lookup_results.html";
+        a.download = "keyframe_credit_sheet_results.html";
         document.body.appendChild(a);
         a.click();
         a.remove();
-        URL.revokeObjectURL(url);
-      } catch (e) {
-        alert("Failed to build HTML: " + String(e));
+        setTimeout(() => URL.revokeObjectURL(url), 0);
+      } finally {
+        btn.disabled = false;
+        btn.textContent = old;
       }
     };
 
@@ -1573,6 +1462,7 @@ ${body}
       lastResults = null;
 
       const results = [];
+      let lastNetworkLookupAt = 0;
       for (let i = 0; i < names.length; i++) {
         const name = names[i];
         const key = cacheKey(name);
@@ -1583,21 +1473,25 @@ ${body}
           continue;
         }
 
+        const waitForSpacing = Math.max(0, DELAY_MS - (Date.now() - lastNetworkLookupAt));
+        if (lastNetworkLookupAt && waitForSpacing) await sleep(waitForSpacing);
+
         log(`Looking up: ${name} ...`);
         try {
           const res = await lookupName(name);
+          lastNetworkLookupAt = Date.now();
           results.push(res);
           cache[key] = res;
           updateCacheCount();
           log(res.found ? `  -> OK` : `  -> FAILED (${res.error})`);
         } catch (e) {
+          lastNetworkLookupAt = Date.now();
           const failed = { query: name, found: false, error: String(e) };
           results.push(failed);
           cache[key] = failed;
           updateCacheCount();
           log(`  -> ERROR: ${e}`);
         }
-        if (i < names.length - 1) await sleep(DELAY_MS);
       }
 
       lastResults = results;
