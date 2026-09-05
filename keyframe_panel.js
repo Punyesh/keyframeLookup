@@ -1361,8 +1361,8 @@ ${body}
           <div style="font-size:11px; color:#8a8f98; margin-bottom:2px;">Any term you add here will be recognized as a role header, just like the built-in ones — useful for abbreviations or house-specific labels the built-in dictionary doesn't know.</div>
           <div id="kfl-custom-roles-list">${customRolesListHtml()}</div>
           <div style="display:flex; gap:6px; margin-top:4px;">
-            <input id="kfl-custom-role-term" placeholder="Term (e.g. AUT)" style="flex:1; min-width:0; background:#1c2028; color:#eee; border:1px solid #262b33; border-radius:6px; padding:6px; font-size:11.5px;">
-            <input id="kfl-custom-role-target" placeholder="Maps to (e.g. Autopsy Report)" style="flex:1; min-width:0; background:#1c2028; color:#eee; border:1px solid #262b33; border-radius:6px; padding:6px; font-size:11.5px;">
+            <input id="kfl-custom-role-term" placeholder="Term (e.g. Ass.ED)" style="flex:1; min-width:0; background:#1c2028; color:#eee; border:1px solid #262b33; border-radius:6px; padding:6px; font-size:11.5px;">
+            <input id="kfl-custom-role-target" placeholder="Maps to (e.g. Assistant Episode Director)" style="flex:1; min-width:0; background:#1c2028; color:#eee; border:1px solid #262b33; border-radius:6px; padding:6px; font-size:11.5px;">
           </div>
           <button id="kfl-custom-role-add" style="background:#7e4ea0; color:#fff; border:none; border-radius:6px; padding:6px; cursor:pointer; font-weight:600; font-size:11.5px;">Add</button>
         </div>
