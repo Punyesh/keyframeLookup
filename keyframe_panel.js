@@ -83,6 +83,27 @@
   const cache = {};
   const cacheKey = (name) => name.trim().toLowerCase();
 
+  // Organizer search cache. The organizer may need to check the same text
+  // more than once (or check a no-space/split variant that was already seen).
+  // Reusing the live search response avoids duplicate network requests without
+  // changing the request pacing for genuinely new names.
+  const organizerSearchCache = new Map();
+  async function searchOrganizerCandidates(text) {
+    const key = (text || "").trim().toLowerCase();
+    if (organizerSearchCache.has(key)) return organizerSearchCache.get(key);
+
+    let matches = [];
+    try {
+      const res = await fetch(`/api/search/?q=${encodeURIComponent(text)}&type=all`, { credentials: "include" });
+      const body = res.ok ? await res.json() : null;
+      matches = (body && body.staff) || [];
+    } catch (e) {
+      matches = [];
+    }
+    organizerSearchCache.set(key, matches);
+    return matches;
+  }
+
   const log = (msg) => {
     const el = document.getElementById("kfl-log");
     if (!el) return;
@@ -840,14 +861,7 @@
       let matched = false;
       for (let len = remaining.length; len >= 1; len--) {
         const candidate = remaining.slice(0, len).join(" ");
-        let matches = [];
-        try {
-          const res = await fetch(`/api/search/?q=${encodeURIComponent(candidate)}&type=all`, { credentials: "include" });
-          const body = res.ok ? await res.json() : null;
-          matches = (body && body.staff) || [];
-        } catch (e) {
-          matches = [];
-        }
+        const matches = await searchOrganizerCandidates(candidate);
         if (matches.length > 0) {
           parts.push({ text: candidate, matches });
           remaining = remaining.slice(len);
@@ -912,9 +926,7 @@
       done++;
       onProgress(done, buffers.length, t.text);
       try {
-        const res = await fetch(`/api/search/?q=${encodeURIComponent(t.text)}&type=all`, { credentials: "include" });
-        const body = res.ok ? await res.json() : null;
-        const matches = (body && body.staff) || [];
+        const matches = await searchOrganizerCandidates(t.text);
         const cls = classifyMatch(t.text, matches);
 
         if (cls.verdict === "ambiguous") {
@@ -935,9 +947,7 @@
           if (/\s/.test(t.text)) {
             const noSpaceText = t.text.replace(/\s+/g, "");
             try {
-              const res2 = await fetch(`/api/search/?q=${encodeURIComponent(noSpaceText)}&type=all`, { credentials: "include" });
-              const body2 = res2.ok ? await res2.json() : null;
-              const matches2 = (body2 && body2.staff) || [];
+              const matches2 = await searchOrganizerCandidates(noSpaceText);
               const cls2 = classifyMatch(noSpaceText, matches2);
               if (cls2.verdict === "studio" || cls2.verdict === "person-exact" || cls2.verdict === "person-diff") {
                 out.push({ kind: "candidate", text: t.text, role: t.role, verdict: cls2.verdict, match: cls2.match });
@@ -981,7 +991,14 @@
       } catch (e) {
         out.push({ kind: "candidate", text: t.text, role: t.role, verdict: "error", match: null });
       }
-      if (i < tokens.length - 1) await sleep(VERIFY_DELAY_MS);
+      // Role-header tokens do not issue a network request, so there is no
+      // reason to spend a pacing interval on them. Keep the delay between
+      // actual candidate lookups, preserving the organizer's conservative
+      // request cadence for the site.
+      if (t.kind === "namebuffer" && i < tokens.length - 1) {
+        const nextCandidateExists = tokens.slice(i + 1).some((next) => next.kind === "namebuffer");
+        if (nextCandidateExists) await sleep(VERIFY_DELAY_MS);
+      }
     }
     return out;
   }
@@ -1013,7 +1030,7 @@
       }
       if (t.verdict === "studio") {
         const studioName = t.match ? (t.match.en || t.match.ja || t.text) : t.text;
-        currentGroup = { studio: studioName, people: [] };
+        currentGroup = { studio: studioName, studioMatch: t.match || null, people: [] };
         currentRoleObj.groups.push(currentGroup);
         return;
       }
@@ -1024,6 +1041,7 @@
         verdict: t.verdict,
         official: official,
         chosen: official ? "official" : "original",
+        match: t.match || null,
       });
     });
     return roles;
@@ -1161,6 +1179,87 @@ ${body}
     return html || `<div style="color:#8a8f98; padding:16px 0; font-size:12.5px;">Nothing parsed — check the pasted text.</div>`;
   }
 
+  // Converts the organizer's verified people into the same result shape used
+  // by the normal Lookup results page. History is deliberately fetched only
+  // when the user asks for the rich HTML view, so Parse & Verify remains a
+  // search-only operation and does not double the number of requests.
+  const organizerProfileCache = new Map();
+
+  function staffIdFromMatch(match) {
+    if (!match) return null;
+    if (match.anilist_id != null) return match.anilist_id;
+    if (match.ja) return "ja:" + encodeURIComponent(match.ja);
+    if (match.en) return "en:" + encodeURIComponent(match.en);
+    return null;
+  }
+
+  function collectOrganizerPeople(roles) {
+    const people = [];
+    const seen = new Set();
+
+    roles.forEach((roleObj) => {
+      roleObj.groups.forEach((group) => {
+        group.people.forEach((person) => {
+          if (!person.match || person.match.is_studio) return;
+          const id = person.match.anilist_id != null
+            ? `id:${person.match.anilist_id}`
+            : `name:${person.match.ja || person.match.en || person.original}`.toLowerCase();
+          if (seen.has(id)) return;
+          seen.add(id);
+          people.push(person);
+        });
+      });
+    });
+    return people;
+  }
+
+  async function buildOrganizerLookupResults(roles, onProgress) {
+    const people = collectOrganizerPeople(roles);
+    const results = [];
+    for (let i = 0; i < people.length; i++) {
+      const person = people[i];
+      const match = person.match;
+      const key = match && match.anilist_id != null
+        ? `id:${match.anilist_id}`
+        : `name:${(match && (match.ja || match.en)) || person.original}`.toLowerCase();
+      onProgress(i + 1, people.length, person.original);
+
+      if (organizerProfileCache.has(key)) {
+        results.push(organizerProfileCache.get(key));
+        continue;
+      }
+
+      const staffId = staffIdFromMatch(match);
+      if (staffId == null) {
+        const failed = {
+          query: person.original,
+          found: false,
+          error: "Chosen match had no id or name to look up",
+        };
+        organizerProfileCache.set(key, failed);
+        results.push(failed);
+        continue;
+      }
+
+      try {
+        const result = await fetchProfile(person.original, staffId, []);
+        organizerProfileCache.set(key, result);
+        results.push(result);
+      } catch (e) {
+        const failed = {
+          query: person.original,
+          found: false,
+          error: String(e),
+        };
+        organizerProfileCache.set(key, failed);
+        results.push(failed);
+      }
+
+      if (i < people.length - 1) await sleep(VERIFY_DELAY_MS);
+    }
+    return results;
+  }
+
   function showOrgResultsPanel(roles) {
     document.getElementById("kfl-org-panel")?.remove();
 
@@ -1228,23 +1327,63 @@ ${body}
       });
     };
 
-    document.getElementById("korg-viewpage").onclick = () => {
+    async function getOrganizerRichResults(actionLabel) {
+      if (!kflOrgData) return null;
+      const viewBtn = document.getElementById("korg-viewpage");
+      const saveBtn = document.getElementById("korg-savehtml");
+      const originalView = viewBtn ? viewBtn.textContent : "";
+      const originalSave = saveBtn ? saveBtn.textContent : "";
+      if (viewBtn) { viewBtn.disabled = true; viewBtn.textContent = "⏳ Loading staff history…"; }
+      if (saveBtn) { saveBtn.disabled = true; saveBtn.textContent = "⏳ Loading staff history…"; }
+
+      try {
+        const rich = await buildOrganizerLookupResults(kflOrgData, (done, total, name) => {
+          orgLog(`Loading staff history ${done}/${total}: ${name}`);
+        });
+        orgLog(`Loaded history for ${rich.filter((r) => r.found).length}/${rich.length} staff entries.`);
+        return rich;
+      } finally {
+        if (viewBtn) { viewBtn.disabled = false; viewBtn.textContent = originalView; }
+        if (saveBtn) { saveBtn.disabled = false; saveBtn.textContent = originalSave; }
+      }
+    }
+
+    document.getElementById("korg-viewpage").onclick = async () => {
       const win = window.open("", "_blank");
       if (!win) { alert("Popup blocked — allow popups for this site and try again."); return; }
-      win.document.write(buildSharePage(kflOrgData));
+      win.document.write("<!DOCTYPE html><html><body style='background:#0b0d10;color:#e8e6e1;font-family:Inter,Arial,sans-serif;padding:40px'><p>Loading staff history…</p></body></html>");
       win.document.close();
+
+      try {
+        const richResults = await getOrganizerRichResults("view");
+        if (!richResults) { win.close(); return; }
+        win.document.open();
+        win.document.write(buildResultsPage(richResults));
+        win.document.close();
+      } catch (e) {
+        win.document.open();
+        win.document.write(`<p style="font-family:Arial;color:#e06c75;padding:40px">Failed to build results: ${esc(String(e))}</p>`);
+        win.document.close();
+      }
     };
 
-    document.getElementById("korg-savehtml").onclick = () => {
-      const html = buildSharePage(kflOrgData);
-      const blob = new Blob([html], { type: "text/html" });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = "credit_sheet.html";
-      document.body.appendChild(a);
-      a.click();
-      a.remove();
+    document.getElementById("korg-savehtml").onclick = async () => {
+      try {
+        const richResults = await getOrganizerRichResults("download");
+        if (!richResults) return;
+        const html = buildResultsPage(richResults);
+        const blob = new Blob([html], { type: "text/html" });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = "keyframe_lookup_results.html";
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        URL.revokeObjectURL(url);
+      } catch (e) {
+        alert("Failed to build HTML: " + String(e));
+      }
     };
 
     // wire the per-person spelling toggles
