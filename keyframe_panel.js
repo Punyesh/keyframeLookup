@@ -17,6 +17,29 @@
 
   let kflMode = "lookup"; // "lookup" | "organize"
 
+  // ---------- custom role dictionary (user-editable, persisted) ----------
+  // Lets the user add their own role terms/abbreviations without needing a
+  // code change every time an unrecognized credit shows up. Stored in
+  // localStorage so it survives across sessions. Custom entries take
+  // priority over the built-in dictionary, so a user can also override a
+  // built-in mapping if they disagree with it.
+  let customRoles = {};
+  try {
+    customRoles = JSON.parse(localStorage.getItem("kfl-custom-roles") || "{}");
+  } catch (e) {
+    customRoles = {};
+  }
+  let customRoleSet = {};
+  function rebuildCustomRoleSet() {
+    customRoleSet = {};
+    Object.keys(customRoles).forEach((k) => { customRoleSet[kflNorm(k)] = customRoles[k]; });
+  }
+  function saveCustomRoles() {
+    localStorage.setItem("kfl-custom-roles", JSON.stringify(customRoles));
+    rebuildCustomRoleSet();
+  }
+  rebuildCustomRoleSet();
+
   // ---------- main panel shell ----------
   const panel = document.createElement("div");
   panel.id = "kfl-panel";
@@ -678,8 +701,8 @@
   function kflNorm(s) { return (s || "").trim().toLowerCase().replace(/[.\s]+/g, ""); }
   const ROLE_SET = {};
   Object.keys(ROLE_MAP).forEach((k) => { ROLE_SET[kflNorm(k)] = ROLE_MAP[k]; });
-  function isRoleHeader(line) { return !!ROLE_SET[kflNorm(line)]; }
-  function roleLabel(line) { return ROLE_SET[kflNorm(line)] || line; }
+  function isRoleHeader(line) { const k = kflNorm(line); return !!(customRoleSet[k] || ROLE_SET[k]); }
+  function roleLabel(line) { const k = kflNorm(line); return customRoleSet[k] || ROLE_SET[k] || line; }
 
   // Unified tokenizer -- works the same regardless of raw-text format
   // (role on its own line, "role： names" inline, "role names" inline with
@@ -1303,6 +1326,19 @@ ${body}
     `;
   }
 
+  function customRolesListHtml() {
+    const keys = Object.keys(customRoles);
+    if (keys.length === 0) {
+      return `<div style="color:#8a8f98; font-size:11px;">No custom roles yet.</div>`;
+    }
+    return keys.map((k) => `
+      <div style="display:flex; align-items:center; justify-content:space-between; gap:6px; padding:3px 0; font-size:11.5px;">
+        <span><strong>${esc(k)}</strong> → ${esc(customRoles[k])}</span>
+        <span class="custom-role-remove" data-key="${esc(k)}" style="color:#e06c75; cursor:pointer; font-family:monospace;">✕</span>
+      </div>
+    `).join("");
+  }
+
   function organizeBodyHtml() {
     return `
       <div id="kfl-drag-handle" style="padding:10px 14px; background:#7e4ea0; font-weight:600; display:flex; justify-content:space-between; align-items:center; cursor:move; user-select:none;">
@@ -1317,8 +1353,18 @@ ${body}
         </button>
         <div id="org-log" style="font-family:monospace; font-size:11px; color:#8a8f98; max-height:90px; overflow-y:auto; line-height:1.5; white-space:pre-wrap;"></div>
         <div id="org-select" style="display:none; flex-direction:column; gap:6px; background:#111; border:1px solid #262b33; border-radius:6px; padding:8px; max-height:180px; overflow-y:auto;"></div>
-        <div style="text-align:center; margin-top:2px;">
+        <div style="text-align:center; margin-top:2px; display:flex; justify-content:center; gap:14px;">
+          <span id="kfl-custom-roles-toggle" style="font-size:11px; color:#8a8f98; cursor:pointer; text-decoration:underline;">⚙️ Custom Roles</span>
           <span id="kfl-mode-switch" style="font-size:11px; color:#8a8f98; cursor:pointer; text-decoration:underline;">🔍 Switch to Lookup</span>
+        </div>
+        <div id="kfl-custom-roles-panel" style="display:none; flex-direction:column; gap:6px; background:#111; border:1px solid #262b33; border-radius:6px; padding:10px;">
+          <div style="font-size:11px; color:#8a8f98; margin-bottom:2px;">Any term you add here will be recognized as a role header, just like the built-in ones — useful for abbreviations or house-specific labels the built-in dictionary doesn't know.</div>
+          <div id="kfl-custom-roles-list">${customRolesListHtml()}</div>
+          <div style="display:flex; gap:6px; margin-top:4px;">
+            <input id="kfl-custom-role-term" placeholder="Term (e.g. AUT)" style="flex:1; min-width:0; background:#1c2028; color:#eee; border:1px solid #262b33; border-radius:6px; padding:6px; font-size:11.5px;">
+            <input id="kfl-custom-role-target" placeholder="Maps to (e.g. Autopsy Report)" style="flex:1; min-width:0; background:#1c2028; color:#eee; border:1px solid #262b33; border-radius:6px; padding:6px; font-size:11.5px;">
+          </div>
+          <button id="kfl-custom-role-add" style="background:#7e4ea0; color:#fff; border:none; border-radius:6px; padding:6px; cursor:pointer; font-weight:600; font-size:11.5px;">Add</button>
         </div>
       </div>
     `;
@@ -1440,6 +1486,36 @@ ${body}
     document.getElementById("kfl-mode-switch").onclick = () => {
       kflMode = "lookup";
       renderPanel();
+    };
+
+    document.getElementById("kfl-custom-roles-toggle").onclick = () => {
+      const panelEl = document.getElementById("kfl-custom-roles-panel");
+      panelEl.style.display = panelEl.style.display === "none" ? "flex" : "none";
+    };
+
+    function refreshCustomRolesList() {
+      document.getElementById("kfl-custom-roles-list").innerHTML = customRolesListHtml();
+      document.querySelectorAll(".custom-role-remove").forEach((el) => {
+        el.onclick = () => {
+          delete customRoles[el.dataset.key];
+          saveCustomRoles();
+          refreshCustomRolesList();
+        };
+      });
+    }
+    refreshCustomRolesList();
+
+    document.getElementById("kfl-custom-role-add").onclick = () => {
+      const termInput = document.getElementById("kfl-custom-role-term");
+      const targetInput = document.getElementById("kfl-custom-role-target");
+      const term = termInput.value.trim();
+      const target = targetInput.value.trim();
+      if (!term || !target) return;
+      customRoles[term] = target;
+      saveCustomRoles();
+      termInput.value = "";
+      targetInput.value = "";
+      refreshCustomRolesList();
     };
 
     document.getElementById("org-run").onclick = async () => {
