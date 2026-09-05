@@ -75,7 +75,7 @@
   }
 
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-  const DELAY_MS = 1500; // between uncached lookups, keeping request volume spaced while making larger lists less painful
+  const DELAY_MS = 1000; // same pacing as the organizer; keep uncached requests reasonably spaced
   const VERIFY_DELAY_MS = 1000; // lighter delay for the organizer's search-only calls
 
   // Cache of already-fetched lookup results, keyed by normalized name.
@@ -83,7 +83,7 @@
   const cache = {};
   const searchCache = {}; // normalized query -> search matches / error
   const profileCache = {}; // stable staff id -> fetched profile result
-  const cacheKey = (name) => name.trim().toLowerCase();
+  const cacheKey = (name) => name.trim().replace(/\s+/g, " ").toLowerCase();
   const searchCacheKey = (name) => name.trim().replace(/\s+/g, " ").toLowerCase();
   const profileCacheKey = (staffId) => String(staffId);
 
@@ -174,7 +174,7 @@
 
   async function searchName(name) {
     const key = searchCacheKey(name);
-    if (searchCache[key]) return searchCache[key];
+    if (searchCache[key]) return { ...searchCache[key], _cached: true };
 
     const searchRes = await fetch(`/api/search/?q=${encodeURIComponent(name)}&type=all`, { credentials: "include" });
     if (!searchRes.ok) {
@@ -191,7 +191,7 @@
   async function fetchProfile(name, staffId, allMatches) {
     const key = profileCacheKey(staffId);
     if (profileCache[key]) {
-      const cached = { ...profileCache[key], query: name, allSearchMatches: allMatches };
+      const cached = { ...profileCache[key], query: name, allSearchMatches: allMatches, _cached: true };
       return cached;
     }
 
@@ -247,7 +247,7 @@
 
   async function lookupName(name) {
     const searchResult = await searchName(name);
-    if (searchResult.error) return { query: name, found: false, error: searchResult.error };
+    if (searchResult.error) return { query: name, found: false, error: searchResult.error, _network: !searchResult._cached };
 
     const matches = searchResult.matches;
     const allMatches = matches.map((m) => ({ id: m.anilist_id, en: m.en, ja: m.ja, jobs: m.jobs, isStudio: !!m.is_studio }));
@@ -258,11 +258,11 @@
     } else {
       log(`  -> ${matches.length} matches found, pick one in the panel...`);
       chosen = await promptForMatch(name, matches);
-      if (!chosen) return { query: name, found: false, error: "Skipped by user (multiple matches)", allSearchMatches: allMatches };
+      if (!chosen) return { query: name, found: false, error: "Skipped by user (multiple matches)", allSearchMatches: allMatches, _network: !searchResult._cached };
     }
 
     if (chosen.is_studio) {
-      return { query: name, found: false, error: "That match is a studio, not a staff member — studio profiles aren't supported by this tool", allSearchMatches: allMatches };
+      return { query: name, found: false, error: "That match is a studio, not a staff member — studio profiles aren't supported by this tool", allSearchMatches: allMatches, _network: !searchResult._cached };
     }
 
     // Staff not linked to an AniList entry have anilist_id: null. The site
@@ -276,9 +276,13 @@
       else if (chosen.en) staffId = "en:" + encodeURIComponent(chosen.en);
     }
 
-    if (staffId == null) return { query: name, found: false, error: "Chosen match had no id or name to look up", allSearchMatches: allMatches };
+    if (staffId == null) return { query: name, found: false, error: "Chosen match had no id or name to look up", allSearchMatches: allMatches, _network: !searchResult._cached };
 
-    return fetchProfile(name, staffId, allMatches);
+    const profileResult = await fetchProfile(name, staffId, allMatches);
+    if (!searchResult._cached) profileResult._network = true;
+    else if (profileResult._cached) profileResult._network = false;
+    else profileResult._network = true;
+    return profileResult;
   }
   // ---------- results page builder ----------
   let uid = 0;
@@ -1118,9 +1122,6 @@
     for (const roleObj of roles || []) {
       for (const group of roleObj.groups || []) {
         for (const person of group.people || []) {
-          // The organizer stores the exact same profile result produced by the
-          // normal Lookup pipeline on each verified person. Reuse it directly
-          // instead of issuing another history lookup when exporting HTML.
           const result = person && person.lookupResult;
           if (!result || !result.found) continue;
           const key = profileCacheKey(result.id != null ? result.id : result.nameEn || result.query);
@@ -1338,6 +1339,7 @@
           <span id="kfl-clear-cache" style="font-size:11px; color:#8a8f98; cursor:pointer; text-decoration:underline;">Clear cache</span>
         </div>
         <div id="kfl-log" style="font-family:monospace; font-size:11px; color:#8a8f98; max-height:90px; overflow-y:auto; line-height:1.5; white-space:pre-wrap;"></div>
+        <div id="kfl-progress" style="font-size:11px; color:#8a8f98; min-height:14px;"></div>
         <div id="kfl-select" style="display:none; flex-direction:column; gap:6px; background:#111; border:1px solid #262b33; border-radius:6px; padding:8px; max-height:180px; overflow-y:auto;"></div>
         <div style="display:flex; gap:8px;">
           <button id="kfl-view" style="display:none; flex:1; background:#4fd1c5; color:#0b0d10; border:none; border-radius:6px; padding:8px; cursor:pointer; font-weight:600;">
@@ -1466,6 +1468,20 @@
 
       const results = [];
       let lastNetworkLookupAt = 0;
+      const progressEl = document.getElementById("kfl-progress");
+      const publishProgress = () => {
+        lastResults = results.slice();
+        if (progressEl) {
+          const found = results.filter((r) => r.found).length;
+          progressEl.textContent = `Processed ${results.length}/${names.length} · ${found} found`;
+        }
+        if (results.length) {
+          document.getElementById("kfl-view").style.display = "block";
+          document.getElementById("kfl-download").style.display = "block";
+          document.getElementById("kfl-download-html").style.display = "block";
+        }
+      };
+
       for (let i = 0; i < names.length; i++) {
         const name = names[i];
         const key = cacheKey(name);
@@ -1473,19 +1489,23 @@
         if (cache[key]) {
           log(`${name}: using cached result`);
           results.push(cache[key]);
+          publishProgress();
           continue;
         }
 
-        const waitForSpacing = Math.max(0, DELAY_MS - (Date.now() - lastNetworkLookupAt));
-        if (lastNetworkLookupAt && waitForSpacing) await sleep(waitForSpacing);
-
         log(`Looking up: ${name} ...`);
         try {
+          // Wait only when this lookup actually needs a network request.
+          // Search/profile caches are also considered fast paths, so they do
+          // not inherit the network pacing delay.
+          const elapsed = Date.now() - lastNetworkLookupAt;
+          if (lastNetworkLookupAt && elapsed < DELAY_MS) await sleep(DELAY_MS - elapsed);
           const res = await lookupName(name);
-          lastNetworkLookupAt = Date.now();
+          if (res._network) lastNetworkLookupAt = Date.now();
           results.push(res);
           cache[key] = res;
           updateCacheCount();
+          publishProgress();
           log(res.found ? `  -> OK` : `  -> FAILED (${res.error})`);
         } catch (e) {
           lastNetworkLookupAt = Date.now();
@@ -1493,11 +1513,16 @@
           results.push(failed);
           cache[key] = failed;
           updateCacheCount();
+          publishProgress();
           log(`  -> ERROR: ${e}`);
         }
       }
 
       lastResults = results;
+      if (progressEl) {
+        const found = results.filter((r) => r.found).length;
+        progressEl.textContent = `Done · ${found}/${results.length} found`;
+      }
       log(`Done — ${results.filter((r) => r.found).length}/${results.length} found.`);
       document.getElementById("kfl-run").disabled = false;
       document.getElementById("kfl-mode-switch").style.pointerEvents = "";
