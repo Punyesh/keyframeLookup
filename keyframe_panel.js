@@ -912,7 +912,9 @@
     return tokens;
   }
 
-  // Exact text match on either name -> unambiguous (studio or person).
+  // Exact text match on either name -> unambiguous, UNLESS more than one
+  // match shares that exact text (two different real people can have the
+  // identical name) -- that's still genuinely ambiguous and needs a pick.
   // No exact match but exactly one non-studio candidate -> treat as a likely
   // spelling variant (resolved automatically, English name preferred).
   // No exact match but 2+ non-studio candidates -> genuinely ambiguous,
@@ -921,16 +923,14 @@
     const norm = (s) => (s || "").trim();
     const candidateNorm = norm(candidateText);
 
-    for (const m of matches) {
-      if (m.is_studio && (norm(m.en) === candidateNorm || norm(m.ja) === candidateNorm)) {
-        return { verdict: "studio", match: m };
-      }
-    }
-    for (const m of matches) {
-      if (!m.is_studio && (norm(m.en) === candidateNorm || norm(m.ja) === candidateNorm)) {
-        return { verdict: "person-exact", match: m };
-      }
-    }
+    const exactStudioMatches = matches.filter((m) => m.is_studio && (norm(m.en) === candidateNorm || norm(m.ja) === candidateNorm));
+    if (exactStudioMatches.length === 1) return { verdict: "studio", match: exactStudioMatches[0] };
+    if (exactStudioMatches.length > 1) return { verdict: "ambiguous", candidates: exactStudioMatches };
+
+    const exactPersonMatches = matches.filter((m) => !m.is_studio && (norm(m.en) === candidateNorm || norm(m.ja) === candidateNorm));
+    if (exactPersonMatches.length === 1) return { verdict: "person-exact", match: exactPersonMatches[0] };
+    if (exactPersonMatches.length > 1) return { verdict: "ambiguous", candidates: exactPersonMatches };
+
     const candidates = matches.filter((m) => !m.is_studio);
     if (candidates.length === 0) return { verdict: "not-found", match: null };
     if (candidates.length === 1) return { verdict: "person-diff", match: candidates[0] };
@@ -1216,7 +1216,7 @@
       if (hasRealRole) lines.push(`**${roleObj.role}**`);
 
       groups.forEach((g) => {
-        if (g.studio) lines.push(g.studio);
+        if (g.studio) lines.push(`*${g.studio}*`);
         lines.push(nameListFor(g));
         lines.push("");
       });
