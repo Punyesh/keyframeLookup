@@ -519,7 +519,10 @@
         .badge { font-size:11px; padding:4px 9px; border-radius:20px; background:var(--panel-2); border:1px solid var(--line); color:var(--cyan); font-family:'JetBrains Mono',monospace; }
         .role-section { border-bottom:1px solid var(--line); }
         .role-section:last-child { border-bottom:none; }
-        .role-head { padding:12px 22px; display:flex; align-items:center; gap:10px; cursor:pointer; user-select:none; }
+        .role-head {
+          padding:12px 22px; display:flex; align-items:center; gap:10px; cursor:pointer; user-select:none;
+          position:sticky; top:0; z-index:5; background:var(--panel);
+        }
         .role-head:hover { background:var(--panel-2); }
         .role-arrow { color:var(--amber); font-size:11px; transition:transform .15s ease; width:10px; flex-shrink:0; }
         .role-section.open .role-arrow { transform: rotate(90deg); }
@@ -562,7 +565,10 @@
         .staff-list { background:var(--panel); border:1px solid var(--line); border-radius:10px; overflow:hidden; }
         .staff-person { border-bottom:1px solid var(--line); }
         .staff-person:last-child { border-bottom:none; }
-        .staff-person-row { padding:12px 20px; display:flex; align-items:center; gap:10px; cursor:pointer; user-select:none; }
+        .staff-person-row {
+          padding:12px 20px; display:flex; align-items:center; gap:10px; cursor:pointer; user-select:none;
+          position:sticky; top:0; z-index:6; background:var(--panel);
+        }
         .staff-person-row:hover { background:var(--panel-2); }
         .staff-arrow { color:var(--amber); font-size:11px; width:10px; flex-shrink:0; transition:transform .15s ease; }
         .staff-person.open .staff-arrow { transform:rotate(90deg); }
@@ -570,6 +576,7 @@
         .staff-name .ja { font-family:'Inter',sans-serif; font-weight:400; color:var(--muted); font-size:12.5px; margin-left:8px; }
         .staff-person-detail { display:none; padding-left:22px; border-top:1px solid var(--line); }
         .staff-person.open .staff-person-detail { display:block; }
+        .staff-person-detail .role-head { top:45px; } /* sticks just below the already-stuck person row above it */
         .staff-empty { color:var(--muted); font-size:12.5px; padding:8px 20px 16px 42px; }
         .work-grid {
           display:grid; grid-template-columns:repeat(auto-fill, minmax(120px, 1fr));
@@ -1223,22 +1230,126 @@
   // Full standalone HTML document -- real, selectable DOM (not a rasterized
   // image). Used by "View as Page" (opens in a new tab) and "Download HTML"
   // (saves as a portable file you can host, embed, or attach anywhere).
-  function buildOrganizerResults(roles) {
-    const seen = {};
-    const results = [];
-    for (const roleObj of roles || []) {
-      for (const group of roleObj.groups || []) {
-        for (const person of group.people || []) {
-          const result = person && person.lookupResult;
-          if (!result || !result.found) continue;
-          const key = profileCacheKey(result.id != null ? result.id : result.nameEn || result.query);
-          if (seen[key]) continue;
-          seen[key] = true;
-          results.push(result);
-        }
+  // Unlike buildOrganizerResults' old approach (which lost the credit
+  // sheet's own role assignments by routing everyone through the generic,
+  // person-centric results page), this keeps the sheet's role/studio
+  // headers as the primary structure -- exactly what was typed in --
+  // while still letting each resolved person expand to show their own
+  // broader career history via the same nested role-section pattern.
+  function buildOrganizerSheetPage(roles) {
+    function personRowHtml(p) {
+      const displayed = p.chosen === "official" && p.official ? p.official : p.original;
+      const result = p.lookupResult;
+
+      if (p.verdict === "not-found" || p.verdict === "error" || !result || !result.found) {
+        return `<div class="staff-person"><div class="staff-person-row" style="cursor:default;"><span class="staff-name" style="opacity:.55;">${esc(displayed)}${p.verdict === "not-found" || p.verdict === "error" ? ' <span style="color:var(--red); font-size:11px;">(not found)</span>' : ""}</span></div></div>`;
       }
+
+      const pid = `orgp${uid++}`;
+      const roleData = result.roles || {};
+      const roleNames = Object.keys(roleData).sort((a, b) => roleData[b].length - roleData[a].length);
+      const detailHtml = roleNames.length === 0
+        ? `<div class="staff-empty">No credits listed.</div>`
+        : roleNames.map((roleName) => {
+            const works = roleData[roleName];
+            const sectionId = `kfl-role-${uid++}`;
+            return `
+              <div class="role-section" id="${sectionId}">
+                <div class="role-head" onclick="event.stopPropagation();document.getElementById('${sectionId}').classList.toggle('open')">
+                  <span class="role-arrow">▶</span>
+                  <span class="role-title">${esc(roleName)}</span>
+                  <span class="role-count">${works.length}</span>
+                </div>
+                <div class="role-works">
+                  ${works.map((w) => `
+                    <div class="role-work">
+                      ${w.kv ? `<img class="role-work-thumb" src="${esc(w.kv)}" alt="" loading="lazy" onerror="this.remove()">` : ""}
+                      <div class="role-work-text">
+                        <div class="role-work-title">${esc(w.work || w.slug)}</div>
+                        <div class="role-work-meta">
+                          <span class="year">${esc(w.year ?? "—")}</span>
+                          ${w.studios ? `<span>${esc(w.studios)}</span>` : ""}
+                          ${w.episodes && w.episodes.length ? `<span>${esc(w.episodes.join(", "))}</span>` : ""}
+                        </div>
+                      </div>
+                    </div>
+                  `).join("")}
+                </div>
+              </div>
+            `;
+          }).join("");
+
+      return `<div class="staff-person" id="${pid}">
+        <div class="staff-person-row" onclick="document.getElementById('${pid}').classList.toggle('open')">
+          <span class="staff-arrow">▶</span>
+          <span class="staff-name">${esc(result.nameEn || displayed)}${result.nameJa ? `<span class="ja">${esc(result.nameJa)}</span>` : ""}</span>
+        </div>
+        <div class="staff-person-detail">${detailHtml}</div>
+      </div>`;
     }
-    return buildResultsPage(results);
+
+    const sections = roles.map((roleObj) => {
+      const groups = roleObj.groups.filter((g) => g.people.length > 0);
+      if (groups.length === 0) return "";
+      const groupsHtml = groups.map((g) => `
+        ${g.studio ? `<div class="orgpage-studio">🏢 ${esc(g.studio)}</div>` : ""}
+        <div class="staff-list" style="margin-bottom:14px;">${g.people.map(personRowHtml).join("")}</div>
+      `).join("");
+      return `<div class="orgpage-role"><div class="orgpage-role-head">${esc(roleObj.role)}</div>${groupsHtml}</div>`;
+    }).join("");
+
+    return `<!DOCTYPE html><html><head><meta charset="UTF-8"><title>Credit Sheet Results</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+:root{--bg:#0b0d10;--panel:#15181d;--panel-2:#1c2028;--line:#262b33;--text:#e8e6e1;--muted:#8a8f98;--amber:#f5a623;--cyan:#4fd1c5;--red:#e06c75;}
+*{box-sizing:border-box;}
+body{margin:0;background:var(--bg);color:var(--text);font-family:Inter,sans-serif;min-height:100vh;}
+.wrap{max-width:900px;margin:0 auto;padding:32px 24px 60px;}
+.header{display:flex;align-items:center;gap:14px;margin-bottom:28px;padding-bottom:20px;border-bottom:1px solid var(--line);}
+.mark{width:32px;height:32px;background:repeating-linear-gradient(45deg,var(--amber),var(--amber) 6px,#111 6px,#111 12px);border-radius:5px;flex-shrink:0;}
+.title{font-family:'Space Grotesk',sans-serif;font-weight:700;font-size:22px;}
+.orgpage-role{margin-bottom:26px;}
+.orgpage-role-head{font-family:'Space Grotesk',sans-serif;font-weight:700;font-size:16px;color:var(--amber);margin-bottom:12px;}
+.orgpage-studio{font-family:'JetBrains Mono',monospace;font-size:11.5px;color:var(--cyan);margin:10px 0 6px;}
+.staff-list{background:var(--panel);border:1px solid var(--line);border-radius:10px;overflow:hidden;}
+.staff-person{border-bottom:1px solid var(--line);}
+.staff-person:last-child{border-bottom:none;}
+.staff-person-row{padding:12px 20px;display:flex;align-items:center;gap:10px;cursor:pointer;user-select:none;position:sticky;top:0;z-index:6;background:var(--panel);}
+.staff-person-row:hover{background:var(--panel-2);}
+.staff-arrow{color:var(--amber);font-size:11px;width:10px;flex-shrink:0;transition:transform .15s ease;}
+.staff-person.open .staff-arrow{transform:rotate(90deg);}
+.staff-name{font-family:'Space Grotesk',sans-serif;font-weight:700;font-size:14px;}
+.staff-name .ja{font-family:'Inter',sans-serif;font-weight:400;color:var(--muted);font-size:12.5px;margin-left:8px;}
+.staff-person-detail{display:none;padding-left:22px;border-top:1px solid var(--line);}
+.staff-person.open .staff-person-detail{display:block;}
+.staff-person-detail .role-head{top:45px;}
+.staff-empty{color:var(--muted);font-size:12.5px;padding:8px 20px 16px 42px;}
+.role-section{border-bottom:1px solid var(--line);}
+.role-section:last-child{border-bottom:none;}
+.role-head{padding:12px 22px;display:flex;align-items:center;gap:10px;cursor:pointer;user-select:none;position:sticky;top:0;z-index:5;background:var(--panel);}
+.role-head:hover{background:var(--panel-2);}
+.role-arrow{color:var(--amber);font-size:11px;transition:transform .15s ease;width:10px;flex-shrink:0;}
+.role-section.open .role-arrow{transform:rotate(90deg);}
+.role-title{font-weight:600;font-size:14px;flex:1;}
+.role-count{font-family:'JetBrains Mono',monospace;font-size:11px;color:var(--amber);background:rgba(245,166,35,.1);padding:2px 8px;border-radius:20px;}
+.role-works{display:none;padding:0 22px 12px 46px;}
+.role-section.open .role-works{display:block;}
+.role-work{display:flex;gap:10px;align-items:flex-start;padding:8px 0;border-bottom:1px dashed var(--line);}
+.role-work:last-child{border-bottom:none;}
+.role-work-thumb{width:42px;height:58px;object-fit:cover;border-radius:4px;flex-shrink:0;background:var(--panel-2);}
+.role-work-text{flex:1;min-width:0;}
+.role-work-title{font-weight:600;font-size:14px;}
+.role-work-meta{margin-top:3px;font-family:'JetBrains Mono',monospace;font-size:11.5px;color:var(--muted);display:flex;gap:10px;flex-wrap:wrap;}
+.role-work-meta .year{color:var(--cyan);}
+.footer{margin-top:24px;padding-top:16px;border-top:1px solid var(--line);font-family:'JetBrains Mono',monospace;font-size:11px;color:var(--muted);}
+.footer a{color:var(--amber);}
+</style></head><body>
+<div class="wrap">
+<div class="header"><div class="mark"></div><div class="title">Credit Sheet</div></div>
+${sections}
+<div class="footer">Verified via <a href="https://keyframe-staff-list.com" target="_blank">KeyFrame Staff List</a></div>
+</div></body></html>`;
   }
 
   let kflOrgData = null;
@@ -1353,7 +1464,7 @@
       btn.disabled = true;
       btn.textContent = "Loading staff history...";
       try {
-        const html = buildOrganizerResults(kflOrgData);
+        const html = buildOrganizerSheetPage(kflOrgData);
         const win = window.open("", "_blank");
         if (!win) { alert("Popup blocked — allow popups for this site and try again."); return; }
         win.document.write(html);
@@ -1370,7 +1481,7 @@
       btn.disabled = true;
       btn.textContent = "Preparing HTML...";
       try {
-        const html = buildOrganizerResults(kflOrgData);
+        const html = buildOrganizerSheetPage(kflOrgData);
         const blob = new Blob([html], { type: "text/html" });
         const url = URL.createObjectURL(blob);
         const a = document.createElement("a");
