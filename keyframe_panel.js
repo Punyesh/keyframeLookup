@@ -1311,7 +1311,7 @@ body{margin:0;background:var(--bg);color:var(--text);font-family:Inter,sans-seri
 .title{font-family:'Space Grotesk',sans-serif;font-weight:700;font-size:22px;}
 .orgpage-role{margin-bottom:26px;}
 .orgpage-role-head{font-family:'Space Grotesk',sans-serif;font-weight:700;font-size:16px;color:var(--amber);margin-bottom:12px;}
-.orgpage-studio{font-family:'JetBrains Mono',monospace;font-size:11.5px;color:var(--cyan);margin:10px 0 6px;}
+.orgpage-studio{font-family:'JetBrains Mono',monospace;font-size:12.5px;font-weight:600;color:var(--cyan);background:var(--panel-2);border:1px solid var(--line);border-left:3px solid var(--cyan);border-radius:6px;padding:9px 14px;margin:18px 0 8px;display:flex;align-items:center;gap:8px;}
 .staff-list{background:var(--panel);border:1px solid var(--line);border-radius:10px;overflow:hidden;}
 .staff-person{border-bottom:1px solid var(--line);}
 .staff-person:last-child{border-bottom:none;}
