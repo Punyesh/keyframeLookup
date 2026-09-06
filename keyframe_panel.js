@@ -763,6 +763,7 @@
     "コンテ協力": "Storyboard Cooperation", "絵コンテ協力": "Storyboard Cooperation", "storyboard cooperation": "Storyboard Cooperation",
     // Animation direction
     "総作画監督": "Chief Animation Director", "chief animation director": "Chief Animation Director", "general animation director": "Chief Animation Director", "cad": "Chief Animation Director",
+    "cad co-op": "Chief Animation Director Cooperation", "cad cooperation": "Chief Animation Director Cooperation",
     "総作画監督補佐": "Assistant Chief Animation Director", "assistant chief animation director": "Assistant Chief Animation Director",
     "作画監督": "Animation Director", "animation director": "Animation Director", "ad": "Animation Director",
     "作画監督補佐": "Assistant Animation Director", "assistant animation director": "Assistant Animation Director", "ass. ad": "Assistant Animation Director", "asst. ad": "Assistant Animation Director",
@@ -862,6 +863,19 @@
   // verifyTokens/trySplitFallback), which is far more reliable than any
   // text-shape heuristic. Line boundaries still flush buffers, since studios
   // and name-pairs are reliably one-per-line even when role labels aren't.
+  // Any "(...)" still present at this point has already survived
+  // ignore-list stripping (things like "(PN)" get removed earlier as
+  // noise) -- so a remaining trailing parenthetical is real information,
+  // almost always a studio this specific person is affiliated with (e.g.
+  // "Kumiko Takayanagi (PIERROT FILMS)"). Pulled off here rather than
+  // guessed at the word-scan level, since the studio name itself often
+  // contains spaces that would otherwise confuse role detection.
+  function extractInlineStudio(text) {
+    const m = text.match(/^(.*?)\s*\(([^)]+)\)\s*$/);
+    if (!m) return { text, studio: null };
+    return { text: m[1].trim(), studio: m[2].trim() };
+  }
+
   function parseCreditSheet(raw) {
     const lines = raw.split("\n").map((l) => l.trim()).filter(Boolean);
     const tokens = [];
@@ -879,7 +893,8 @@
         let buffer = [];
         const flushBuffer = () => {
           if (buffer.length === 0) return;
-          tokens.push({ kind: "namebuffer", text: buffer.join(" "), role: currentRole });
+          const { text: cleanText, studio: inlineStudio } = extractInlineStudio(buffer.join(" "));
+          tokens.push({ kind: "namebuffer", text: cleanText, role: currentRole, inlineStudio });
           buffer = [];
         };
 
@@ -1032,7 +1047,7 @@
     return null;
   }
 
-  async function makeOrgCandidate(text, role, verdict, match, allMatches) {
+  async function makeOrgCandidate(text, role, verdict, match, allMatches, inlineStudio) {
     let lookupResult = null;
     if (match && !match.is_studio && (verdict === "person-exact" || verdict === "person-diff")) {
       const staffId = staffIdFromMatch(match);
@@ -1042,28 +1057,28 @@
         }]);
       }
     }
-    return { kind: "candidate", text, role, verdict, match: match || null, lookupResult };
+    return { kind: "candidate", text, role, verdict, match: match || null, lookupResult, inlineStudio: inlineStudio || null };
   }
 
   // Resolution for one piece of a confirmed split. If that piece is itself
   // unambiguous, resolves directly; if it's ambiguous too (e.g. multiple
   // "Christine"s), shows the same picker as the normal flow rather than
   // silently guessing the first match.
-  async function resolveSplitHalf(text, role, matches) {
+  async function resolveSplitHalf(text, role, matches, inlineStudio) {
     const cls = classifyMatch(text, matches);
     const allMatches = matches.map((m) => ({
       id: m.anilist_id, en: m.en, ja: m.ja, jobs: m.jobs, isStudio: !!m.is_studio,
     }));
     if (cls.verdict === "studio" || cls.verdict === "person-exact" || cls.verdict === "person-diff") {
-      return makeOrgCandidate(text, role, cls.verdict, cls.match, allMatches);
+      return makeOrgCandidate(text, role, cls.verdict, cls.match, allMatches, inlineStudio);
     }
     if (cls.verdict === "ambiguous") {
       const chosen = await promptForOrgMatch(text, cls.candidates);
       return makeOrgCandidate(text, role, chosen ? "person-diff" : "not-found", chosen, chosen ? [{
         id: chosen.anilist_id, en: chosen.en, ja: chosen.ja, jobs: chosen.jobs, isStudio: !!chosen.is_studio,
-      }] : []);
+      }] : [], inlineStudio);
     }
-    return makeOrgCandidate(text, role, "not-found", null, allMatches);
+    return makeOrgCandidate(text, role, "not-found", null, allMatches, inlineStudio);
   }
 
   async function verifyTokens(tokens, onProgress) {
@@ -1092,7 +1107,8 @@
           const chosen = await promptForOrgMatch(t.text, cls.candidates);
           out.push(await makeOrgCandidate(
             t.text, t.role, chosen ? "person-diff" : "not-found", chosen,
-            chosen ? [{ id: chosen.anilist_id, en: chosen.en, ja: chosen.ja, jobs: chosen.jobs, isStudio: !!chosen.is_studio }] : allMatches
+            chosen ? [{ id: chosen.anilist_id, en: chosen.en, ja: chosen.ja, jobs: chosen.jobs, isStudio: !!chosen.is_studio }] : allMatches,
+            t.inlineStudio
           ));
         } else if (cls.verdict === "not-found") {
           let noSpaceResolved = false;
@@ -1107,14 +1123,15 @@
                 id: m.anilist_id, en: m.en, ja: m.ja, jobs: m.jobs, isStudio: !!m.is_studio,
               }));
               if (cls2.verdict === "studio" || cls2.verdict === "person-exact" || cls2.verdict === "person-diff") {
-                out.push(await makeOrgCandidate(t.text, t.role, cls2.verdict, cls2.match, allMatches2));
+                out.push(await makeOrgCandidate(t.text, t.role, cls2.verdict, cls2.match, allMatches2, t.inlineStudio));
                 noSpaceResolved = true;
               } else if (cls2.verdict === "ambiguous") {
                 onProgress(done, buffers.length, `${t.text} — pick a match in the panel...`);
                 const chosen2 = await promptForOrgMatch(t.text, cls2.candidates);
                 out.push(await makeOrgCandidate(
                   t.text, t.role, chosen2 ? "person-diff" : "not-found", chosen2,
-                  chosen2 ? [{ id: chosen2.anilist_id, en: chosen2.en, ja: chosen2.ja, jobs: chosen2.jobs, isStudio: !!chosen2.is_studio }] : allMatches2
+                  chosen2 ? [{ id: chosen2.anilist_id, en: chosen2.en, ja: chosen2.ja, jobs: chosen2.jobs, isStudio: !!chosen2.is_studio }] : allMatches2,
+                  t.inlineStudio
                 ));
                 noSpaceResolved = true;
               }
@@ -1128,20 +1145,20 @@
               const doSplit = await promptSplitConfirm(t.text, splitParts);
               if (doSplit) {
                 for (const part of splitParts) {
-                  out.push(await resolveSplitHalf(part.text, t.role, part.matches));
+                  out.push(await resolveSplitHalf(part.text, t.role, part.matches, null));
                 }
               } else {
-                out.push(await makeOrgCandidate(t.text, t.role, "not-found", null, allMatches));
+                out.push(await makeOrgCandidate(t.text, t.role, "not-found", null, allMatches, t.inlineStudio));
               }
             } else {
-              out.push(await makeOrgCandidate(t.text, t.role, "not-found", null, allMatches));
+              out.push(await makeOrgCandidate(t.text, t.role, "not-found", null, allMatches, t.inlineStudio));
             }
           }
         } else {
-          out.push(await makeOrgCandidate(t.text, t.role, cls.verdict, cls.match, allMatches));
+          out.push(await makeOrgCandidate(t.text, t.role, cls.verdict, cls.match, allMatches, t.inlineStudio));
         }
       } catch (e) {
-        out.push(await makeOrgCandidate(t.text, t.role, "error", null, []));
+        out.push(await makeOrgCandidate(t.text, t.role, "error", null, [], t.inlineStudio));
       }
     }
     return out;
@@ -1187,6 +1204,7 @@
         chosen: official ? "official" : "original",
         match: t.match || null,
         lookupResult: t.lookupResult || null,
+        inlineStudio: t.inlineStudio || null,
       });
     });
     return roles;
@@ -1203,7 +1221,8 @@
       return group.people
         .map((p) => {
           const name = p.chosen === "official" && p.official ? p.official : p.original;
-          return p.verdict === "not-found" ? `${name}?` : name;
+          const withFlag = p.verdict === "not-found" ? `${name}?` : name;
+          return p.inlineStudio ? `${withFlag} (${p.inlineStudio})` : withFlag;
         })
         .join(", ");
     }
@@ -1240,9 +1259,10 @@
     function personRowHtml(p) {
       const displayed = p.chosen === "official" && p.official ? p.official : p.original;
       const result = p.lookupResult;
+      const studioTag = p.inlineStudio ? `<span class="staff-inline-studio">${esc(p.inlineStudio)}</span>` : "";
 
       if (p.verdict === "not-found" || p.verdict === "error" || !result || !result.found) {
-        return `<div class="staff-person"><div class="staff-person-row" style="cursor:default;"><span class="staff-name" style="opacity:.55;">${esc(displayed)}${p.verdict === "not-found" || p.verdict === "error" ? ' <span style="color:var(--red); font-size:11px;">(not found)</span>' : ""}</span></div></div>`;
+        return `<div class="staff-person"><div class="staff-person-row" style="cursor:default;"><span class="staff-name" style="opacity:.55;">${esc(displayed)}${p.verdict === "not-found" || p.verdict === "error" ? ' <span style="color:var(--red); font-size:11px;">(not found)</span>' : ""}</span>${studioTag}</div></div>`;
       }
 
       const pid = `orgp${uid++}`;
@@ -1283,6 +1303,7 @@
         <div class="staff-person-row" onclick="document.getElementById('${pid}').classList.toggle('open')">
           <span class="staff-arrow">▶</span>
           <span class="staff-name">${esc(result.nameEn || displayed)}${result.nameJa ? `<span class="ja">${esc(result.nameJa)}</span>` : ""}</span>
+          ${studioTag}
         </div>
         <div class="staff-person-detail">${detailHtml}</div>
       </div>`;
@@ -1312,6 +1333,7 @@ body{margin:0;background:var(--bg);color:var(--text);font-family:Inter,sans-seri
 .orgpage-role{margin-bottom:26px;}
 .orgpage-role-head{font-family:'Space Grotesk',sans-serif;font-weight:700;font-size:16px;color:var(--amber);margin-bottom:12px;}
 .orgpage-studio-row{font-family:'JetBrains Mono',monospace;font-size:11px;font-weight:600;color:var(--muted);background:var(--panel-2);padding:8px 20px;border-bottom:1px solid var(--line);}
+.staff-inline-studio{font-family:'JetBrains Mono',monospace;font-size:10.5px;color:var(--muted);margin-left:auto;padding-left:10px;}
 .staff-list{background:var(--panel);border:1px solid var(--line);border-radius:10px;overflow:hidden;}
 .staff-person{border-bottom:1px solid var(--line);}
 .staff-person:last-child{border-bottom:none;}
@@ -1374,6 +1396,7 @@ ${sections}
           const initialText = p.chosen === "official" && p.official ? p.official : p.original;
           html += `<div class="korg-person">`;
           html += `<span class="korg-person-name" id="korg-name-${gid}">${esc(initialText)}</span>`;
+          if (p.inlineStudio) html += `<span class="korg-inline-studio">${esc(p.inlineStudio)}</span>`;
           if (p.verdict === "not-found" || p.verdict === "error") {
             html += `<span class="korg-tag notfound">not found</span>`;
           } else if (p.official && p.official !== p.original) {
@@ -1423,6 +1446,7 @@ ${sections}
         #kfl-org-panel .korg-tag { font-family: monospace; font-size: 9.5px; padding: 1px 6px; border-radius: 20px; white-space: nowrap; }
         #kfl-org-panel .korg-tag.ok { background: rgba(137,195,122,.15); color: #89c37a; }
         #kfl-org-panel .korg-tag.notfound { background: rgba(224,108,117,.15); color: #e06c75; }
+        #kfl-org-panel .korg-inline-studio { font-family: monospace; font-size: 10px; color: #8a8f98; }
         #kfl-org-panel .korg-toggle { font-family: monospace; font-size: 10px; color: #4fd1c5; cursor: pointer; text-decoration: underline dotted; white-space: nowrap; }
       </style>
       <div id="korg-drag-handle" style="padding:10px 14px; background:#7e4ea0; font-weight:600; display:flex; justify-content:space-between; align-items:center; cursor:move; user-select:none; flex-shrink:0;">
