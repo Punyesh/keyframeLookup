@@ -432,10 +432,10 @@
   }
 
   // Treats everyone you looked up as if they were the staff of one
-  // hypothetical show, grouping them by role -- the same organizing idea
-  // as a real staff sheet. Collapsed to just names by default; clicking a
-  // name expands to show that person's own work history inline. Not-found
-  // names get their own group at the end.
+  // Same idea as the List view (name -> roles -> works), but collapsed to
+  // just the name by default -- click to expand. Unlike List view, this
+  // covers everyone you looked up in one place. Each person appears
+  // exactly once, regardless of how many roles they have.
   function staffDetailHtml(r) {
     const roles = r.roles || {};
     const roleNames = Object.keys(roles).sort((a, b) => roles[b].length - roles[a].length);
@@ -454,44 +454,21 @@
   }
 
   function renderStaffSheet(results) {
-    const roleMap = {}; // roleName -> [result, ...]
-    const notFound = [];
-    results.forEach((r) => {
-      if (!r.found) { notFound.push(r); return; }
-      const jobs = r.jobs && r.jobs.length ? r.jobs : ["Other"];
-      jobs.forEach((job) => {
-        if (!roleMap[job]) roleMap[job] = [];
-        roleMap[job].push(r);
-      });
-    });
-
-    const roleNames = Object.keys(roleMap).sort((a, b) => roleMap[b].length - roleMap[a].length);
-
-    const categories = roleNames.map((roleName) => {
-      const rows = roleMap[roleName].map((r) => {
-        const pid = `staffp${uid++}`;
-        return `<div class="staff-person" id="${pid}">
-          <div class="staff-person-row" onclick="document.getElementById('${pid}').classList.toggle('open')">
-            <span class="staff-arrow">▶</span>
-            <span class="staff-name">${esc(r.nameEn || r.query)}${r.nameJa ? `<span class="ja">${esc(r.nameJa)}</span>` : ""}</span>
-          </div>
-          <div class="staff-person-detail">${staffDetailHtml(r)}</div>
-        </div>`;
-      }).join("");
-      return `<div class="staff-category">
-        <div class="staff-role-head">${esc(roleName)}</div>
-        <div class="staff-role-body">${rows}</div>
+    const rows = results.map((r) => {
+      if (!r.found) {
+        return `<div class="staff-person"><div class="staff-person-row" style="cursor:default;"><span class="staff-name" style="opacity:.55;">${esc(r.query)}</span></div></div>`;
+      }
+      const pid = `staffp${uid++}`;
+      return `<div class="staff-person" id="${pid}">
+        <div class="staff-person-row" onclick="document.getElementById('${pid}').classList.toggle('open')">
+          <span class="staff-arrow">▶</span>
+          <span class="staff-name">${esc(r.nameEn || r.query)}${r.nameJa ? `<span class="ja">${esc(r.nameJa)}</span>` : ""}</span>
+        </div>
+        <div class="staff-person-detail">${staffDetailHtml(r)}</div>
       </div>`;
     }).join("");
 
-    const notFoundHtml = notFound.length ? `<div class="staff-category">
-      <div class="staff-role-head">Not Found</div>
-      <div class="staff-role-body">
-        ${notFound.map((r) => `<div class="staff-person"><div class="staff-person-row" style="cursor:default;"><span class="staff-name" style="opacity:.55;">${esc(r.query)}</span></div></div>`).join("")}
-      </div>
-    </div>` : "";
-
-    return `<div class="staff-sheet">${categories}${notFoundHtml}</div>`;
+    return `<div class="staff-list">${rows}</div>`;
   }
 
   function buildResultsPage(results) {
@@ -562,27 +539,26 @@
         body[data-view="staff"] #kfl-view-list { display:none; }
         body[data-view="staff"] #kfl-view-staff { display:block; }
 
-        /* Staff sheet -- everyone looked up, grouped by role like a
-           hypothetical show's credits. Collapsed to names by default. */
-        .staff-sheet { display:flex; flex-wrap:wrap; align-content:flex-start; gap:16px; }
-        .staff-category { width:300px; flex:0 0 auto; background:var(--panel); border:1px solid var(--line); border-radius:8px; overflow:hidden; }
-        .staff-role-head { background:var(--panel-2); padding:10px 14px; font-family:'Space Grotesk',sans-serif; font-weight:700; font-size:13.5px; color:var(--amber); border-bottom:1px solid var(--line); }
-        .staff-person { border-bottom:1px dashed var(--line); }
+        /* Staff sheet -- everyone you looked up, one row each (name first,
+           collapsed), click to expand their own role/work breakdown --
+           same idea as List view, just collapsed by default. */
+        .staff-list { background:var(--panel); border:1px solid var(--line); border-radius:10px; overflow:hidden; }
+        .staff-person { border-bottom:1px solid var(--line); }
         .staff-person:last-child { border-bottom:none; }
-        .staff-person-row { padding:9px 14px; display:flex; align-items:center; gap:8px; cursor:pointer; user-select:none; }
+        .staff-person-row { padding:12px 20px; display:flex; align-items:center; gap:10px; cursor:pointer; user-select:none; }
         .staff-person-row:hover { background:var(--panel-2); }
-        .staff-arrow { color:var(--amber); font-size:10px; width:10px; flex-shrink:0; transition:transform .15s ease; }
+        .staff-arrow { color:var(--amber); font-size:11px; width:10px; flex-shrink:0; transition:transform .15s ease; }
         .staff-person.open .staff-arrow { transform:rotate(90deg); }
-        .staff-name { font-size:13px; }
-        .staff-name .ja { font-family:'Inter',sans-serif; font-weight:400; color:var(--muted); font-size:11.5px; margin-left:6px; }
-        .staff-person-detail { display:none; padding:2px 14px 12px 32px; }
+        .staff-name { font-family:'Space Grotesk',sans-serif; font-weight:700; font-size:14px; }
+        .staff-name .ja { font-family:'Inter',sans-serif; font-weight:400; color:var(--muted); font-size:12.5px; margin-left:8px; }
+        .staff-person-detail { display:none; padding:4px 20px 16px 42px; }
         .staff-person.open .staff-person-detail { display:block; }
-        .staff-detail-role { margin-bottom:8px; }
-        .staff-detail-role-name { font-weight:600; font-size:11.5px; color:var(--cyan); margin-bottom:3px; }
-        .staff-work { font-size:12px; color:var(--text); padding:2px 0; }
-        .staff-work-year { color:var(--muted); font-family:'JetBrains Mono',monospace; font-size:10.5px; margin-left:6px; }
-        .staff-work-eps { color:var(--muted); font-family:'JetBrains Mono',monospace; font-size:10.5px; margin-left:6px; }
-        .staff-empty { color:var(--muted); font-size:12px; padding:4px 0; }
+        .staff-detail-role { margin-bottom:10px; }
+        .staff-detail-role-name { font-weight:600; font-size:12px; color:var(--cyan); margin-bottom:4px; }
+        .staff-work { font-size:12.5px; color:var(--text); padding:2px 0; }
+        .staff-work-year { color:var(--muted); font-family:'JetBrains Mono',monospace; font-size:11px; margin-left:6px; }
+        .staff-work-eps { color:var(--muted); font-family:'JetBrains Mono',monospace; font-size:11px; margin-left:6px; }
+        .staff-empty { color:var(--muted); font-size:12.5px; padding:4px 0; }
         .work-grid {
           display:grid; grid-template-columns:repeat(auto-fill, minmax(120px, 1fr));
           gap:16px; padding:18px 22px;
@@ -1620,11 +1596,6 @@
         if (progressEl) {
           const found = results.filter((r) => r.found).length;
           progressEl.textContent = `Processed ${results.length}/${names.length} · ${found} found`;
-        }
-        if (results.length) {
-          document.getElementById("kfl-view").style.display = "block";
-          document.getElementById("kfl-download").style.display = "block";
-          document.getElementById("kfl-download-html").style.display = "block";
         }
       };
 
