@@ -1292,7 +1292,7 @@
       const groups = roleObj.groups.filter((g) => g.people.length > 0);
       if (groups.length === 0) return "";
       const groupsHtml = groups.map((g) => `
-        ${g.studio ? `<div class="orgpage-studio">🏢 ${esc(g.studio)}</div>` : ""}
+        ${g.studio ? `<div class="orgpage-studio">${esc(g.studio)}</div>` : ""}
         <div class="staff-list" style="margin-bottom:14px;">${g.people.map(personRowHtml).join("")}</div>
       `).join("");
       return `<div class="orgpage-role"><div class="orgpage-role-head">${esc(roleObj.role)}</div>${groupsHtml}</div>`;
@@ -1366,7 +1366,7 @@ ${sections}
         if (g.people.length === 0) return;
         html += `<div class="korg-group">`;
         html += g.studio
-          ? `<div class="korg-studio">🏢 ${esc(g.studio)}</div>`
+          ? `<div class="korg-studio">${esc(g.studio)}</div>`
           : `<div class="korg-freelance">No studio listed</div>`;
         html += `<div class="korg-chip-row">`;
         g.people.forEach((p) => {
