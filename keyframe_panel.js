@@ -431,11 +431,9 @@
     `;
   }
 
-  // Treats everyone you looked up as if they were the staff of one
-  // Same idea as the List view (name -> roles -> works), but collapsed to
-  // just the name by default -- click to expand. Unlike List view, this
-  // covers everyone you looked up in one place. Each person appears
-  // exactly once, regardless of how many roles they have.
+  // Reuses List view's exact nested role-section pattern (independently
+  // collapsible roles, cover art, same colors) rather than a flat dump --
+  // name -> click -> roles appear -> click a role -> its works appear.
   function staffDetailHtml(r) {
     const roles = r.roles || {};
     const roleNames = Object.keys(roles).sort((a, b) => roles[b].length - roles[a].length);
@@ -444,12 +442,31 @@
     }
     return roleNames.map((roleName) => {
       const works = roles[roleName];
-      const worksHtml = works.map((w) => {
-        const epsText = w.episodes && w.episodes.length ? ` <span class="staff-work-eps">${esc(w.episodes.join(", "))}</span>` : "";
-        const yearText = w.year != null ? `<span class="staff-work-year">${esc(w.year)}</span>` : "";
-        return `<div class="staff-work"><span class="staff-work-title">${esc(w.work || w.slug)}</span>${yearText}${epsText}</div>`;
-      }).join("");
-      return `<div class="staff-detail-role"><div class="staff-detail-role-name">${esc(roleName)}</div>${worksHtml}</div>`;
+      const sectionId = `kfl-role-${uid++}`;
+      return `
+        <div class="role-section" id="${sectionId}">
+          <div class="role-head" onclick="event.stopPropagation();document.getElementById('${sectionId}').classList.toggle('open')">
+            <span class="role-arrow">▶</span>
+            <span class="role-title">${esc(roleName)}</span>
+            <span class="role-count">${works.length}</span>
+          </div>
+          <div class="role-works">
+            ${works.map((w) => `
+              <div class="role-work">
+                ${w.kv ? `<img class="role-work-thumb" src="${esc(w.kv)}" alt="" loading="lazy" onerror="this.remove()">` : ""}
+                <div class="role-work-text">
+                  <div class="role-work-title">${esc(w.work || w.slug)}</div>
+                  <div class="role-work-meta">
+                    <span class="year">${esc(w.year ?? "—")}</span>
+                    ${w.studios ? `<span>${esc(w.studios)}</span>` : ""}
+                    ${w.episodes && w.episodes.length ? `<span>${esc(w.episodes.join(", "))}</span>` : ""}
+                  </div>
+                </div>
+              </div>
+            `).join("")}
+          </div>
+        </div>
+      `;
     }).join("");
   }
 
@@ -551,14 +568,9 @@
         .staff-person.open .staff-arrow { transform:rotate(90deg); }
         .staff-name { font-family:'Space Grotesk',sans-serif; font-weight:700; font-size:14px; }
         .staff-name .ja { font-family:'Inter',sans-serif; font-weight:400; color:var(--muted); font-size:12.5px; margin-left:8px; }
-        .staff-person-detail { display:none; padding:4px 20px 16px 42px; }
+        .staff-person-detail { display:none; padding-left:22px; border-top:1px solid var(--line); }
         .staff-person.open .staff-person-detail { display:block; }
-        .staff-detail-role { margin-bottom:10px; }
-        .staff-detail-role-name { font-weight:600; font-size:12px; color:var(--cyan); margin-bottom:4px; }
-        .staff-work { font-size:12.5px; color:var(--text); padding:2px 0; }
-        .staff-work-year { color:var(--muted); font-family:'JetBrains Mono',monospace; font-size:11px; margin-left:6px; }
-        .staff-work-eps { color:var(--muted); font-family:'JetBrains Mono',monospace; font-size:11px; margin-left:6px; }
-        .staff-empty { color:var(--muted); font-size:12.5px; padding:4px 0; }
+        .staff-empty { color:var(--muted); font-size:12.5px; padding:8px 20px 16px 42px; }
         .work-grid {
           display:grid; grid-template-columns:repeat(auto-fill, minmax(120px, 1fr));
           gap:16px; padding:18px 22px;
@@ -1173,11 +1185,10 @@
     return roles;
   }
 
-  // Matches the style of well-established credit-sheet posts: a plain
-  // "Role: Name, Name" line when a role has just one group, or "Role:" on
-  // its own line followed by blank-line-separated studio blocks when a
-  // role spans multiple studios/groups. Minimal decoration -- no emoji,
-  // no per-name flags beyond a trailing "?" for not-found.
+  // A role gets its own header line whenever one was actually detected in
+  // the raw sheet -- "Unlabeled" (no role found at all) skips the fake
+  // header and just lists names directly. Minimal decoration otherwise --
+  // no emoji, no per-name flags beyond a trailing "?" for not-found.
   function buildOrgMarkdown(roles) {
     const lines = [];
 
@@ -1194,19 +1205,14 @@
       const groups = roleObj.groups.filter((g) => g.people.length > 0);
       if (groups.length === 0) return;
 
-      if (groups.length === 1) {
-        const g = groups[0];
-        const studioLabel = g.studio ? ` (${g.studio})` : "";
-        lines.push(`**${roleObj.role}**${studioLabel}: ${nameListFor(g)}`);
+      const hasRealRole = roleObj.role && roleObj.role !== "Unlabeled";
+      if (hasRealRole) lines.push(`**${roleObj.role}**`);
+
+      groups.forEach((g) => {
+        if (g.studio) lines.push(g.studio);
+        lines.push(nameListFor(g));
         lines.push("");
-      } else {
-        lines.push(`**${roleObj.role}:**`);
-        groups.forEach((g) => {
-          if (g.studio) lines.push(g.studio);
-          lines.push(nameListFor(g));
-          lines.push("");
-        });
-      }
+      });
     });
 
     // trim the trailing blank line
