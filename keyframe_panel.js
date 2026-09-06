@@ -1291,11 +1291,11 @@
     const sections = roles.map((roleObj) => {
       const groups = roleObj.groups.filter((g) => g.people.length > 0);
       if (groups.length === 0) return "";
-      const groupsHtml = groups.map((g) => `
-        ${g.studio ? `<div class="orgpage-studio">${esc(g.studio)}</div>` : ""}
-        <div class="staff-list" style="margin-bottom:14px;">${g.people.map(personRowHtml).join("")}</div>
-      `).join("");
-      return `<div class="orgpage-role"><div class="orgpage-role-head">${esc(roleObj.role)}</div>${groupsHtml}</div>`;
+      const rowsHtml = groups.map((g) => {
+        const studioRow = g.studio ? `<div class="orgpage-studio-row">${esc(g.studio)}</div>` : "";
+        return studioRow + g.people.map(personRowHtml).join("");
+      }).join("");
+      return `<div class="orgpage-role"><div class="orgpage-role-head">${esc(roleObj.role)}</div><div class="staff-list">${rowsHtml}</div></div>`;
     }).join("");
 
     return `<!DOCTYPE html><html><head><meta charset="UTF-8"><title>Credit Sheet Results</title>
@@ -1311,7 +1311,7 @@ body{margin:0;background:var(--bg);color:var(--text);font-family:Inter,sans-seri
 .title{font-family:'Space Grotesk',sans-serif;font-weight:700;font-size:22px;}
 .orgpage-role{margin-bottom:26px;}
 .orgpage-role-head{font-family:'Space Grotesk',sans-serif;font-weight:700;font-size:16px;color:var(--amber);margin-bottom:12px;}
-.orgpage-studio{font-family:'JetBrains Mono',monospace;font-size:12.5px;font-weight:600;color:var(--cyan);background:var(--panel-2);border:1px solid var(--line);border-left:3px solid var(--cyan);border-radius:6px;padding:9px 14px;margin:18px 0 8px;display:flex;align-items:center;gap:8px;}
+.orgpage-studio-row{font-family:'JetBrains Mono',monospace;font-size:11px;font-weight:600;color:var(--muted);background:var(--panel-2);padding:8px 20px;border-bottom:1px solid var(--line);}
 .staff-list{background:var(--panel);border:1px solid var(--line);border-radius:10px;overflow:hidden;}
 .staff-person{border-bottom:1px solid var(--line);}
 .staff-person:last-child{border-bottom:none;}
