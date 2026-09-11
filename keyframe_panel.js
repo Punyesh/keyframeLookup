@@ -323,7 +323,8 @@
   // own artist search page. You find out by clicking; nothing here claims
   // to know in advance whether a page exists.
   function sakugabooruSearchUrl(name) {
-    return `https://www.sakugabooru.com/artist?name=${encodeURIComponent(name)}`;
+    const tagified = (name || "").trim().toLowerCase().replace(/\s+/g, "_");
+    return `https://www.sakugabooru.com/artist?name=${encodeURIComponent(tagified)}`;
   }
 
   function renderPerson(r) {
