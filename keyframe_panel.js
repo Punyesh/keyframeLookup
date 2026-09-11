@@ -876,32 +876,30 @@
     return { text: m[1].trim(), studio: m[2].trim() };
   }
 
-  function parseCreditSheet(raw) {
-    const lines = raw.split("\n").map((l) => l.trim()).filter(Boolean);
-    const tokens = [];
-    let currentRole = null;
+  // Splits a names-only chunk of text by comma (a hard boundary between
+  // distinct people/studios), then word-scans each piece for a role only
+  // at the very start of that piece (buffer still empty) -- never mid-word,
+  // which is what let a studio name like "ANIMETIX Production" get
+  // misread as a role switch on the word "Production". Returns the
+  // (possibly updated) current role, since a comma piece can itself start
+  // with a role label (e.g. "AD" repeated mid-list).
+  function processNamesChunk(text, role, tokens) {
+    const commaPieces = text.split(",").map((s) => s.trim()).filter(Boolean);
+    commaPieces.forEach((piece) => {
+      const words = piece.split(/\s+/).map((w) => w.trim()).filter(Boolean);
+      let buffer = [];
+      const flushBuffer = () => {
+        if (buffer.length === 0) return;
+        const { text: cleanText, studio: inlineStudio } = extractInlineStudio(buffer.join(" "));
+        tokens.push({ kind: "namebuffer", text: cleanText, role, inlineStudio });
+        buffer = [];
+      };
 
-    lines.forEach((line) => {
-      const strippedLine = stripIgnoredTerms(line).trim();
-      if (!strippedLine) return;
-      const normalizedLine = strippedLine.replace(/[：:]/g, " ");
-      const commaSegments = normalizedLine.split(",").map((s) => s.trim()).filter(Boolean);
-
-      commaSegments.forEach((segment) => {
-        const words = segment.split(/\s+/).map((w) => w.trim()).filter(Boolean);
-
-        let buffer = [];
-        const flushBuffer = () => {
-          if (buffer.length === 0) return;
-          const { text: cleanText, studio: inlineStudio } = extractInlineStudio(buffer.join(" "));
-          tokens.push({ kind: "namebuffer", text: cleanText, role: currentRole, inlineStudio });
-          buffer = [];
-        };
-
-        let i = 0;
-        while (i < words.length) {
-          let matchedRole = null;
-          let matchedLen = 0;
+      let i = 0;
+      while (i < words.length) {
+        let matchedRole = null;
+        let matchedLen = 0;
+        if (buffer.length === 0) {
           for (let len = Math.min(4, words.length - i); len >= 1; len--) {
             const phrase = words.slice(i, i + len).join(" ");
             if (isRoleHeader(phrase)) {
@@ -910,17 +908,67 @@
               break;
             }
           }
-          if (matchedRole) {
-            flushBuffer();
-            currentRole = matchedRole;
-            tokens.push({ kind: "role", text: currentRole });
-            i += matchedLen;
-          } else {
-            buffer.push(words[i]);
-            i += 1;
+        }
+        if (matchedRole) {
+          flushBuffer();
+          role = matchedRole;
+          tokens.push({ kind: "role", text: role });
+          i += matchedLen;
+        } else {
+          buffer.push(words[i]);
+          i += 1;
+        }
+      }
+      flushBuffer();
+    });
+    return role;
+  }
+
+  function parseCreditSheet(raw) {
+    const lines = raw.split("\n").map((l) => l.trim()).filter(Boolean);
+    const tokens = [];
+    let currentRole = null;
+
+    lines.forEach((line) => {
+      const strippedLine = stripIgnoredTerms(line).trim();
+      if (!strippedLine) return;
+
+      // Colons get special handling, separate from commas: in
+      // "roleA： namesA roleB： namesB", each colon-delimited chunk (except
+      // the last) ends with the label for the NEXT role, and everything
+      // before that trailing label is names for the CURRENT role. This
+      // correctly handles multiple role switches crammed onto one line
+      // with colons, while still only ever detecting a role at a genuine
+      // boundary (colon or comma) rather than mid-word-scan -- which is
+      // what previously let a studio name like "ANIMETIX Production" get
+      // misread as a role switch on the word "Production".
+      const colonChunks = strippedLine.split(/[：:]/).map((s) => s.trim()).filter(Boolean);
+
+      colonChunks.forEach((chunk, idx) => {
+        const isLast = idx === colonChunks.length - 1;
+        if (isLast) {
+          currentRole = processNamesChunk(chunk, currentRole, tokens);
+          return;
+        }
+
+        const words = chunk.split(/\s+/).map((w) => w.trim()).filter(Boolean);
+        let trailingRole = null;
+        let trailingLen = 0;
+        for (let len = Math.min(4, words.length); len >= 1; len--) {
+          const phrase = words.slice(words.length - len).join(" ");
+          if (isRoleHeader(phrase)) {
+            trailingRole = roleLabel(phrase);
+            trailingLen = len;
+            break;
           }
         }
-        flushBuffer(); // flush at end of each comma segment -- keeps names from merging across commas
+
+        const namesText = trailingRole ? words.slice(0, words.length - trailingLen).join(" ") : chunk;
+        if (namesText) currentRole = processNamesChunk(namesText, currentRole, tokens);
+        if (trailingRole) {
+          currentRole = trailingRole;
+          tokens.push({ kind: "role", text: currentRole });
+        }
       });
     });
 
