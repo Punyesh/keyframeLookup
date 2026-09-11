@@ -324,7 +324,7 @@
   // to know in advance whether a page exists.
   function sakugabooruSearchUrl(name) {
     const tagified = (name || "").trim().toLowerCase().replace(/\s+/g, "_");
-    return `https://www.sakugabooru.com/artist?name=${encodeURIComponent(tagified)}`;
+    return `https://www.sakugabooru.com/post?tags=${encodeURIComponent(tagified)}`;
   }
 
   function renderPerson(r) {
