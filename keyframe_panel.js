@@ -318,6 +318,14 @@
   }
   // ---------- results page builder ----------
   let uid = 0;
+  // No automatic verification -- Sakugabooru's API blocks cross-origin
+  // requests from this site (confirmed live), so this just links to their
+  // own artist search page. You find out by clicking; nothing here claims
+  // to know in advance whether a page exists.
+  function sakugabooruSearchUrl(name) {
+    return `https://www.sakugabooru.com/artist?name=${encodeURIComponent(name)}`;
+  }
+
   function renderPerson(r) {
     if (!r.found) {
       return `<div class="person"><div class="error-card"><span class="q">${esc(r.query)}</span> — ${esc(r.error || "not found")}</div></div>`;
@@ -365,6 +373,7 @@
           <div class="person-name">${esc(r.nameEn || r.query)}${r.nameJa ? `<span class="ja">${esc(r.nameJa)}</span>` : ""}</div>
           <div class="badges">${jobs}</div>
           ${studiosHtml}
+          <a class="sakuga-link" href="${sakugabooruSearchUrl(r.nameEn || r.query)}" target="_blank" rel="noopener">Search Sakugabooru ↗</a>
         </div>
         <div>${rolesHtml || '<div style="padding:16px 22px; color:var(--muted); font-size:13px;">No credits listed.</div>'}</div>
       </div>
@@ -421,6 +430,7 @@
             <div class="person-name">${esc(r.nameEn || r.query)}${r.nameJa ? `<span class="ja">${esc(r.nameJa)}</span>` : ""}</div>
             <div class="badges">${jobs}</div>
             ${studiosHtml}
+            <a class="sakuga-link" href="${sakugabooruSearchUrl(r.nameEn || r.query)}" target="_blank" rel="noopener">Search Sakugabooru ↗</a>
           </div>
           ${toggleLink}
         </div>
@@ -516,6 +526,8 @@
         .person-name .ja { font-family:'Inter',sans-serif; font-weight:400; color:var(--muted); font-size:13px; margin-left:8px; }
         .badges { display:flex; flex-wrap:wrap; gap:6px; margin-top:9px; }
         .studio-affiliations { font-family:'JetBrains Mono',monospace; font-size:11px; color:var(--muted); margin-top:8px; }
+        .sakuga-link { display:inline-block; font-size:10.5px; color:var(--muted); text-decoration:none; margin-top:6px; opacity:.7; }
+        .sakuga-link:hover { color:var(--cyan); opacity:1; text-decoration:underline; }
         .badge { font-size:11px; padding:4px 9px; border-radius:20px; background:var(--panel-2); border:1px solid var(--line); color:var(--cyan); font-family:'JetBrains Mono',monospace; }
         .role-section { border-bottom:1px solid var(--line); }
         .role-section:last-child { border-bottom:none; }
