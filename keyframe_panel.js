@@ -1329,8 +1329,8 @@
       const pid = `orgp${uid++}`;
       const roleData = result.roles || {};
       const roleNames = Object.keys(roleData).sort((a, b) => roleData[b].length - roleData[a].length);
-      const sakugaLinkHtml = `<a class="sakuga-link" href="${sakugabooruSearchUrl(result.nameEn || displayed)}" target="_blank" rel="noopener">Search Sakugabooru ↗</a>`;
-      const detailHtml = (roleNames.length === 0
+      const sakugaLinkHtml = `<a class="sakuga-link" href="${sakugabooruSearchUrl(result.nameEn || displayed)}" target="_blank" rel="noopener" onclick="event.stopPropagation();">Search Sakugabooru ↗</a>`;
+      const detailHtml = roleNames.length === 0
         ? `<div class="staff-empty">No credits listed.</div>`
         : roleNames.map((roleName) => {
             const works = roleData[roleName];
@@ -1359,13 +1359,14 @@
                 </div>
               </div>
             `;
-          }).join("")) + sakugaLinkHtml;
+          }).join("");
 
       return `<div class="staff-person" id="${pid}">
         <div class="staff-person-row" onclick="document.getElementById('${pid}').classList.toggle('open')">
           <span class="staff-arrow">▶</span>
           <span class="staff-name">${esc(result.nameEn || displayed)}${result.nameJa ? `<span class="ja">${esc(result.nameJa)}</span>` : ""}</span>
           ${studioTag}
+          ${sakugaLinkHtml}
         </div>
         <div class="staff-person-detail">${detailHtml}</div>
       </div>`;
@@ -1409,7 +1410,7 @@ body{margin:0;background:var(--bg);color:var(--text);font-family:Inter,sans-seri
 .staff-person.open .staff-person-detail{display:block;}
 .staff-person-detail .role-head{top:45px;}
 .staff-empty{color:var(--muted);font-size:12.5px;padding:8px 20px 16px 42px;}
-.sakuga-link{display:block;font-size:10.5px;color:var(--muted);text-decoration:none;opacity:.7;padding:0 20px 10px 42px;}
+.sakuga-link{display:inline-block;font-size:10.5px;color:var(--muted);text-decoration:none;opacity:.7;margin-left:auto;padding-left:10px;}
 .sakuga-link:hover{color:var(--cyan);opacity:1;text-decoration:underline;}
 .role-section{border-bottom:1px solid var(--line);}
 .role-section:last-child{border-bottom:none;}
