@@ -15,7 +15,7 @@
   document.getElementById("kfl-panel")?.remove();
   document.getElementById("kfl-org-panel")?.remove();
 
-  let kflMode = "lookup"; // "lookup" | "organize"
+  let kflMode = "lookup"; // "lookup" | "organize" | "compare"
 
   // ---------- custom role dictionary (user-editable, persisted) ----------
   // Lets the user add their own role terms/abbreviations without needing a
@@ -1628,6 +1628,75 @@ ${sections}
     return buildOrgMarkdown(kflOrgData);
   }
 
+  // ---------- Comparison mode ----------
+  // KeyFrame embeds a show's ENTIRE staff list (all episodes at once) as
+  // inline JSON in the page itself -- confirmed by inspecting a real page's
+  // source. Since this fetch is same-origin (we're already running on
+  // keyframe-staff-list.com), there's no CORS issue here at all, unlike the
+  // Sakugabooru case. Accepts either a bare slug or a full staff page URL.
+  async function fetchShowStaffData(identifier) {
+    let slug = identifier.trim();
+    const urlMatch = slug.match(/\/staff\/([^\/?#]+)/);
+    if (urlMatch) slug = urlMatch[1];
+    if (!slug) throw new Error("Enter a show URL or slug first.");
+    const res = await fetch(`/staff/${encodeURIComponent(slug)}`, { credentials: "include" });
+    if (!res.ok) throw new Error(`Failed to load that show's page (status ${res.status}).`);
+    const html = await res.text();
+    const match = html.match(/<script id="staffListData"[^>]*>([\s\S]*?)<\/script>/);
+    if (!match) throw new Error("Couldn't find staff data on that page -- check the URL/slug.");
+    return JSON.parse(match[1]);
+  }
+
+  // "12", "#12", "012" -> "12" -- lets the user type an episode number in
+  // whatever format is natural, matching against the show data's own
+  // "#01"-style menu names.
+  function normalizeEpisodeKey(ep) {
+    const digits = String(ep).replace(/[^\d]/g, "");
+    return digits ? String(parseInt(digits, 10)) : "";
+  }
+
+  function findEpisodeMenu(data, epNum) {
+    const target = normalizeEpisodeKey(epNum);
+    if (!target) return null;
+    return (data.menus || []).find((m) => m.name !== "Overview" && normalizeEpisodeKey(m.name) === target) || null;
+  }
+
+  // Walks category -> role -> staff, keeping only people with a stable id
+  // (studios and un-identified names can't be reliably matched across
+  // episodes, so they're excluded from the comparison).
+  function flattenEpisodeStaff(menu) {
+    const out = [];
+    for (const cat of menu.credits || []) {
+      for (const role of cat.roles || []) {
+        for (const s of role.staff || []) {
+          if (s.isStudio || s.id == null) continue;
+          out.push({ id: s.id, en: s.en, ja: s.ja, role: role.name });
+        }
+      }
+    }
+    return out;
+  }
+
+  function computeComparison(staffA, staffB) {
+    const rolesById = new Map();
+    staffA.forEach((s) => {
+      if (!rolesById.has(s.id)) rolesById.set(s.id, { en: s.en, ja: s.ja, rolesA: new Set(), rolesB: new Set() });
+      rolesById.get(s.id).rolesA.add(s.role);
+    });
+    const idsInB = new Set();
+    staffB.forEach((s) => {
+      idsInB.add(s.id);
+      if (rolesById.has(s.id)) rolesById.get(s.id).rolesB.add(s.role);
+    });
+    const shared = [];
+    rolesById.forEach((v, id) => {
+      if (idsInB.has(id)) {
+        shared.push({ id, en: v.en, ja: v.ja, rolesA: Array.from(v.rolesA), rolesB: Array.from(v.rolesB) });
+      }
+    });
+    return shared.sort((a, b) => (a.en || "").localeCompare(b.en || ""));
+  }
+
   // ---------- panel body templates ----------
   function lookupBodyHtml() {
     return `
@@ -1659,8 +1728,9 @@ ${sections}
         <button id="kfl-download-html" style="display:none; background:#1c2028; color:#e8e6e1; border:1px solid #262b33; border-radius:6px; padding:8px; cursor:pointer; font-weight:600; margin-top:4px;">
           ⬇️ Download HTML (to share)
         </button>
-        <div style="text-align:center; margin-top:2px;">
-          <span id="kfl-mode-switch" style="font-size:11px; color:#8a8f98; cursor:pointer; text-decoration:underline;">📋 Switch to Credit Sheet Organizer</span>
+        <div style="text-align:center; margin-top:2px; display:flex; justify-content:center; gap:12px; flex-wrap:wrap;">
+          <span id="kfl-mode-switch-organize" class="kfl-mode-switch-link" style="font-size:11px; color:#8a8f98; cursor:pointer; text-decoration:underline;">📋 Switch to Credit Sheet Organizer</span>
+          <span id="kfl-mode-switch-compare" class="kfl-mode-switch-link" style="font-size:11px; color:#8a8f98; cursor:pointer; text-decoration:underline;">⚖️ Switch to Comparison</span>
         </div>
       </div>
     `;
@@ -1708,7 +1778,8 @@ ${sections}
         <div style="text-align:center; margin-top:2px; display:flex; justify-content:center; gap:12px; flex-wrap:wrap;">
           <span id="kfl-custom-roles-toggle" style="font-size:11px; color:#8a8f98; cursor:pointer; text-decoration:underline;">⚙️ Custom Roles</span>
           <span id="kfl-ignore-list-toggle" style="font-size:11px; color:#8a8f98; cursor:pointer; text-decoration:underline;">🚫 Ignore List</span>
-          <span id="kfl-mode-switch" style="font-size:11px; color:#8a8f98; cursor:pointer; text-decoration:underline;">🔍 Switch to Lookup</span>
+          <span id="kfl-mode-switch-lookup" class="kfl-mode-switch-link" style="font-size:11px; color:#8a8f98; cursor:pointer; text-decoration:underline;">🔍 Switch to Lookup</span>
+          <span id="kfl-mode-switch-compare" class="kfl-mode-switch-link" style="font-size:11px; color:#8a8f98; cursor:pointer; text-decoration:underline;">⚖️ Switch to Comparison</span>
         </div>
         <div id="kfl-custom-roles-panel" style="display:none; flex-direction:column; gap:6px; background:#111; border:1px solid #262b33; border-radius:6px; padding:10px;">
           <div style="font-size:11px; color:#8a8f98; margin-bottom:2px;">Any term you add here will be recognized as a role header, just like the built-in ones — useful for abbreviations or house-specific labels the built-in dictionary doesn't know.</div>
@@ -1731,6 +1802,32 @@ ${sections}
     `;
   }
 
+  function compareBodyHtml() {
+    return `
+      <div id="kfl-drag-handle" style="padding:10px 14px; background:#7e4ea0; font-weight:600; display:flex; justify-content:space-between; align-items:center; cursor:move; user-select:none;">
+        <span>Comparison</span>
+        <span id="kfl-close" data-no-drag="1" style="cursor:pointer; opacity:.8;">✕</span>
+      </div>
+      <div style="padding:12px 14px; display:flex; flex-direction:column; gap:8px;">
+        <input id="cmp-show" placeholder="Show URL or slug (e.g. mushoku-tensei-iii-...)"
+          style="width:100%; background:#111; color:#eee; border:1px solid #262b33; border-radius:6px; padding:8px; box-sizing:border-box; font-size:12px;">
+        <div style="display:flex; gap:8px;">
+          <input id="cmp-ep-a" placeholder="Episode A (e.g. 11)" style="flex:1; min-width:0; background:#111; color:#eee; border:1px solid #262b33; border-radius:6px; padding:8px; box-sizing:border-box; font-size:12px;">
+          <input id="cmp-ep-b" placeholder="Episode B (e.g. 12)" style="flex:1; min-width:0; background:#111; color:#eee; border:1px solid #262b33; border-radius:6px; padding:8px; box-sizing:border-box; font-size:12px;">
+        </div>
+        <button id="cmp-run" style="background:#7e4ea0; color:#fff; border:none; border-radius:6px; padding:8px; cursor:pointer; font-weight:600;">
+          Compare
+        </button>
+        <div id="cmp-log" style="font-family:monospace; font-size:11px; color:#8a8f98; max-height:70px; overflow-y:auto; line-height:1.5; white-space:pre-wrap;"></div>
+        <div id="cmp-results" style="max-height:320px; overflow-y:auto;"></div>
+        <div style="text-align:center; margin-top:2px; display:flex; justify-content:center; gap:12px; flex-wrap:wrap;">
+          <span id="kfl-mode-switch-lookup" class="kfl-mode-switch-link" style="font-size:11px; color:#8a8f98; cursor:pointer; text-decoration:underline;">🔍 Switch to Lookup</span>
+          <span id="kfl-mode-switch-organize" class="kfl-mode-switch-link" style="font-size:11px; color:#8a8f98; cursor:pointer; text-decoration:underline;">📋 Switch to Credit Sheet Organizer</span>
+        </div>
+      </div>
+    `;
+  }
+
   function wireLookupHandlers() {
     document.getElementById("kfl-close").onclick = () => panel.remove();
     setupDrag(document.getElementById("kfl-drag-handle"), panel);
@@ -1742,8 +1839,12 @@ ${sections}
       log("Cache cleared.");
     };
 
-    document.getElementById("kfl-mode-switch").onclick = () => {
+    document.getElementById("kfl-mode-switch-organize").onclick = () => {
       kflMode = "organize";
+      renderPanel();
+    };
+    document.getElementById("kfl-mode-switch-compare").onclick = () => {
+      kflMode = "compare";
       renderPanel();
     };
 
@@ -1787,8 +1888,7 @@ ${sections}
 
       document.getElementById("kfl-log").textContent = "";
       document.getElementById("kfl-run").disabled = true;
-      document.getElementById("kfl-mode-switch").style.pointerEvents = "none";
-      document.getElementById("kfl-mode-switch").style.opacity = "0.4";
+      document.querySelectorAll(".kfl-mode-switch-link").forEach((el) => { el.style.pointerEvents = "none"; el.style.opacity = "0.4"; });
       document.getElementById("kfl-view").style.display = "none";
       document.getElementById("kfl-download").style.display = "none";
       document.getElementById("kfl-download-html").style.display = "none";
@@ -1848,8 +1948,7 @@ ${sections}
       }
       log(`Done — ${results.filter((r) => r.found).length}/${results.length} found.`);
       document.getElementById("kfl-run").disabled = false;
-      document.getElementById("kfl-mode-switch").style.pointerEvents = "";
-      document.getElementById("kfl-mode-switch").style.opacity = "";
+      document.querySelectorAll(".kfl-mode-switch-link").forEach((el) => { el.style.pointerEvents = ""; el.style.opacity = ""; });
       document.getElementById("kfl-view").style.display = "block";
       document.getElementById("kfl-download").style.display = "block";
       document.getElementById("kfl-download-html").style.display = "block";
@@ -1867,8 +1966,12 @@ ${sections}
       el.scrollTop = el.scrollHeight;
     };
 
-    document.getElementById("kfl-mode-switch").onclick = () => {
+    document.getElementById("kfl-mode-switch-lookup").onclick = () => {
       kflMode = "lookup";
+      renderPanel();
+    };
+    document.getElementById("kfl-mode-switch-compare").onclick = () => {
+      kflMode = "compare";
       renderPanel();
     };
 
@@ -1935,8 +2038,7 @@ ${sections}
 
       document.getElementById("org-log").textContent = "";
       document.getElementById("org-run").disabled = true;
-      document.getElementById("kfl-mode-switch").style.pointerEvents = "none";
-      document.getElementById("kfl-mode-switch").style.opacity = "0.4";
+      document.querySelectorAll(".kfl-mode-switch-link").forEach((el) => { el.style.pointerEvents = "none"; el.style.opacity = "0.4"; });
 
       const tokens = parseCreditSheet(raw);
 
@@ -1950,15 +2052,82 @@ ${sections}
 
       orgLog("Done. Results opened in the side panel.");
       document.getElementById("org-run").disabled = false;
-      document.getElementById("kfl-mode-switch").style.pointerEvents = "";
-      document.getElementById("kfl-mode-switch").style.opacity = "";
+      document.querySelectorAll(".kfl-mode-switch-link").forEach((el) => { el.style.pointerEvents = ""; el.style.opacity = ""; });
+    };
+  }
+
+  function wireCompareHandlers() {
+    document.getElementById("kfl-close").onclick = () => panel.remove();
+    setupDrag(document.getElementById("kfl-drag-handle"), panel);
+
+    const cmpLog = (msg) => {
+      const el = document.getElementById("cmp-log");
+      if (!el) return;
+      el.textContent += (el.textContent ? "\n" : "") + msg;
+      el.scrollTop = el.scrollHeight;
+    };
+
+    document.getElementById("kfl-mode-switch-lookup").onclick = () => {
+      kflMode = "lookup";
+      renderPanel();
+    };
+    document.getElementById("kfl-mode-switch-organize").onclick = () => {
+      kflMode = "organize";
+      renderPanel();
+    };
+
+    document.getElementById("cmp-run").onclick = async () => {
+      const show = document.getElementById("cmp-show").value.trim();
+      const epA = document.getElementById("cmp-ep-a").value.trim();
+      const epB = document.getElementById("cmp-ep-b").value.trim();
+      if (!show || !epA || !epB) { cmpLog("Fill in the show and both episode numbers first."); return; }
+
+      document.getElementById("cmp-log").textContent = "";
+      document.getElementById("cmp-results").innerHTML = "";
+      document.getElementById("cmp-run").disabled = true;
+      document.querySelectorAll(".kfl-mode-switch-link").forEach((el) => { el.style.pointerEvents = "none"; el.style.opacity = "0.4"; });
+
+      try {
+        cmpLog(`Fetching show data...`);
+        const data = await fetchShowStaffData(show);
+        cmpLog(`Loaded "${data.title || show}".`);
+
+        const menuA = findEpisodeMenu(data, epA);
+        const menuB = findEpisodeMenu(data, epB);
+        if (!menuA) { cmpLog(`Couldn't find episode "${epA}" on this show.`); return; }
+        if (!menuB) { cmpLog(`Couldn't find episode "${epB}" on this show.`); return; }
+
+        const staffA = flattenEpisodeStaff(menuA);
+        const staffB = flattenEpisodeStaff(menuB);
+        cmpLog(`Episode ${epA}: ${staffA.length} credited. Episode ${epB}: ${staffB.length} credited.`);
+
+        const shared = computeComparison(staffA, staffB);
+        cmpLog(`${shared.length} shared between both episodes.`);
+
+        const resultsEl = document.getElementById("cmp-results");
+        if (shared.length === 0) {
+          resultsEl.innerHTML = `<div style="color:#8a8f98; font-size:12px; padding:8px 0;">No overlap found.</div>`;
+        } else {
+          resultsEl.innerHTML = shared.map((s) => `
+            <div style="padding:8px 0; border-bottom:1px solid #262b33;">
+              <div style="font-weight:600; font-size:13px;">${esc(s.en || s.ja || "Unknown")}${s.ja && s.en ? `<span style="color:#8a8f98; font-weight:400; font-size:11px; margin-left:6px;">${esc(s.ja)}</span>` : ""}</div>
+              <div style="font-size:11px; color:#8a8f98; margin-top:3px; font-family:monospace;">Ep ${esc(epA)}: ${esc(s.rolesA.join(", "))} · Ep ${esc(epB)}: ${esc(s.rolesB.join(", "))}</div>
+            </div>
+          `).join("");
+        }
+      } catch (e) {
+        cmpLog(`Error: ${e.message || e}`);
+      } finally {
+        document.getElementById("cmp-run").disabled = false;
+        document.querySelectorAll(".kfl-mode-switch-link").forEach((el) => { el.style.pointerEvents = ""; el.style.opacity = ""; });
+      }
     };
   }
 
   function renderPanel() {
-    panel.innerHTML = kflMode === "lookup" ? lookupBodyHtml() : organizeBodyHtml();
-    if (kflMode === "lookup") wireLookupHandlers();
-    else wireOrganizeHandlers();
+    if (kflMode === "lookup") { panel.innerHTML = lookupBodyHtml(); wireLookupHandlers(); }
+    else if (kflMode === "organize") { panel.innerHTML = organizeBodyHtml(); wireOrganizeHandlers(); }
+    else { panel.innerHTML = compareBodyHtml(); wireCompareHandlers(); }
   }
 
   renderPanel();
