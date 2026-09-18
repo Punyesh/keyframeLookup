@@ -1697,6 +1697,60 @@ ${sections}
     return shared.sort((a, b) => (a.en || "").localeCompare(b.en || ""));
   }
 
+  function buildComparisonPage(titleA, epA, titleB, epB, shared) {
+    const cardsHtml = shared.length === 0
+      ? `<div style="color:var(--muted); font-size:14px; padding:20px 0;">No overlap found.</div>`
+      : shared.map((s) => `
+          <div class="cmp-card">
+            <div class="cmp-card-name">${esc(s.en || s.ja || "Unknown")}${s.ja && s.en ? `<span class="ja">${esc(s.ja)}</span>` : ""}</div>
+            <div class="cmp-pills">
+              ${s.rolesA.map((r) => `<span class="pill pill-a">${esc(r)}</span>`).join("")}
+              ${s.rolesB.map((r) => `<span class="pill pill-b">${esc(r)}</span>`).join("")}
+            </div>
+          </div>
+        `).join("");
+
+    return `<!DOCTYPE html><html><head><meta charset="UTF-8"><title>Staff Comparison</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@600;700&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+:root{--bg:#0b0d10;--panel:#15181d;--panel-2:#1c2028;--line:#262b33;--text:#e8e6e1;--muted:#8a8f98;--amber:#f5a623;--cyan:#4fd1c5;}
+*{box-sizing:border-box;}
+body{margin:0;background:var(--bg);color:var(--text);font-family:Inter,sans-serif;min-height:100vh;}
+.wrap{max-width:1000px;margin:0 auto;padding:32px 24px 60px;}
+.header{display:flex;align-items:center;gap:14px;margin-bottom:24px;}
+.mark{width:32px;height:32px;background:repeating-linear-gradient(45deg,var(--amber),var(--amber) 6px,#111 6px,#111 12px);border-radius:5px;flex-shrink:0;}
+.title{font-family:'Space Grotesk',sans-serif;font-weight:700;font-size:22px;}
+.summary{padding:16px 20px;background:var(--panel);border:1px solid var(--line);border-radius:10px;margin-bottom:24px;}
+.summary-show{font-family:'Space Grotesk',sans-serif;font-weight:700;font-size:15px;}
+.summary-show.a{color:var(--amber);}
+.summary-show.b{color:var(--cyan);}
+.summary-ep{color:var(--muted);font-weight:400;font-family:monospace;font-size:12px;}
+.summary-vs{color:var(--muted);text-align:center;font-size:11px;margin:6px 0;}
+.summary-count{margin-top:12px;padding-top:12px;border-top:1px solid var(--line);font-size:13px;}
+.summary-count strong{color:var(--amber);}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:12px;}
+.cmp-card{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:14px 16px;}
+.cmp-card-name{font-family:'Space Grotesk',sans-serif;font-weight:700;font-size:15px;}
+.cmp-card-name .ja{font-family:Inter,sans-serif;font-weight:400;color:var(--muted);font-size:12px;margin-left:8px;}
+.cmp-pills{display:flex;flex-wrap:wrap;gap:6px;margin-top:10px;}
+.pill{border-radius:20px;padding:3px 10px;font-size:11px;}
+.pill-a{background:rgba(245,166,35,.12);color:var(--amber);border:1px solid rgba(245,166,35,.3);}
+.pill-b{background:rgba(79,209,197,.12);color:var(--cyan);border:1px solid rgba(79,209,197,.3);}
+</style></head><body>
+<div class="wrap">
+  <div class="header"><div class="mark"></div><div class="title">Staff Comparison</div></div>
+  <div class="summary">
+    <div class="summary-show a">${esc(titleA)} <span class="summary-ep">${esc(epA)}</span></div>
+    <div class="summary-vs">vs</div>
+    <div class="summary-show b">${esc(titleB)} <span class="summary-ep">${esc(epB)}</span></div>
+    <div class="summary-count"><strong>${shared.length}</strong> ${shared.length === 1 ? "person" : "people"} credited in both</div>
+  </div>
+  <div class="grid">${cardsHtml}</div>
+</div>
+</body></html>`;
+  }
+
   // ---------- panel body templates ----------
   function lookupBodyHtml() {
     return `
@@ -1834,6 +1888,9 @@ ${sections}
           Compare
         </button>
         <div id="cmp-log" style="font-family:monospace; font-size:11px; color:#8a8f98; max-height:70px; overflow-y:auto; line-height:1.5; white-space:pre-wrap;"></div>
+        <button id="cmp-view" style="display:none; background:#4fd1c5; color:#0b0d10; border:none; border-radius:6px; padding:8px; cursor:pointer; font-weight:600;">
+          🌐 View as Page
+        </button>
         <div id="cmp-results" style="max-height:360px; overflow-y:auto;"></div>
         <div style="text-align:center; margin-top:2px; display:flex; justify-content:center; gap:12px; flex-wrap:wrap;">
           <span id="kfl-mode-switch-lookup" class="kfl-mode-switch-link" style="font-size:11px; color:#8a8f98; cursor:pointer; text-decoration:underline;">🔍 Switch to Lookup</span>
@@ -2075,6 +2132,8 @@ ${sections}
     document.getElementById("kfl-close").onclick = () => panel.remove();
     setupDrag(document.getElementById("kfl-drag-handle"), panel);
 
+    let lastComparison = null;
+
     const cmpLog = (msg) => {
       const el = document.getElementById("cmp-log");
       if (!el) return;
@@ -2112,6 +2171,8 @@ ${sections}
       async function loadShow(identifier) {
         document.getElementById("cmp-log").textContent = "";
         document.getElementById("cmp-results").innerHTML = "";
+        document.getElementById("cmp-view").style.display = "none";
+        lastComparison = null;
         statusEl.textContent = "";
         loadBtn.disabled = true;
         epSelect.disabled = true;
@@ -2244,6 +2305,17 @@ ${sections}
         `).join("");
         resultsEl.innerHTML = header + rows;
       }
+
+      lastComparison = { titleA, epA, titleB, epB, shared };
+      document.getElementById("cmp-view").style.display = "block";
+    };
+
+    document.getElementById("cmp-view").onclick = () => {
+      if (!lastComparison) return;
+      const win = window.open("", "_blank");
+      if (!win) { cmpLog("Popup blocked — allow popups for this site and try again."); return; }
+      win.document.write(buildComparisonPage(lastComparison.titleA, lastComparison.epA, lastComparison.titleB, lastComparison.epB, lastComparison.shared));
+      win.document.close();
     };
   }
 
