@@ -1809,13 +1809,24 @@ ${sections}
         <span id="kfl-close" data-no-drag="1" style="cursor:pointer; opacity:.8;">✕</span>
       </div>
       <div style="padding:12px 14px; display:flex; flex-direction:column; gap:8px;">
-        <input id="cmp-show" placeholder="Show URL or slug (e.g. mushoku-tensei-iii-...)"
-          style="width:100%; background:#111; color:#eee; border:1px solid #262b33; border-radius:6px; padding:8px; box-sizing:border-box; font-size:12px;">
-        <div style="display:flex; gap:8px;">
-          <input id="cmp-ep-a" placeholder="Episode A (e.g. 11)" style="flex:1; min-width:0; background:#111; color:#eee; border:1px solid #262b33; border-radius:6px; padding:8px; box-sizing:border-box; font-size:12px;">
-          <input id="cmp-ep-b" placeholder="Episode B (e.g. 12)" style="flex:1; min-width:0; background:#111; color:#eee; border:1px solid #262b33; border-radius:6px; padding:8px; box-sizing:border-box; font-size:12px;">
+        <div style="position:relative;">
+          <div style="display:flex; gap:6px;">
+            <input id="cmp-show" placeholder="Type a show name..." autocomplete="off"
+              style="flex:1; min-width:0; background:#111; color:#eee; border:1px solid #262b33; border-radius:6px; padding:8px; box-sizing:border-box; font-size:12px;">
+            <button id="cmp-load-show" style="background:#1c2028; color:#e8e6e1; border:1px solid #262b33; border-radius:6px; padding:8px 12px; cursor:pointer; font-weight:600; font-size:12px; white-space:nowrap;">Load</button>
+          </div>
+          <div id="cmp-show-dropdown" style="display:none; position:absolute; top:100%; left:0; right:0; z-index:10; background:#15181d; border:1px solid #262b33; border-radius:6px; margin-top:4px; max-height:220px; overflow-y:auto; box-shadow:0 6px 20px rgba(0,0,0,.4);"></div>
         </div>
-        <button id="cmp-run" style="background:#7e4ea0; color:#fff; border:none; border-radius:6px; padding:8px; cursor:pointer; font-weight:600;">
+        <div id="cmp-show-status" style="font-size:11px; color:#8a8f98; min-height:14px;"></div>
+        <div style="display:flex; gap:8px;">
+          <select id="cmp-ep-a" disabled style="flex:1; min-width:0; background:#111; color:#eee; border:1px solid #262b33; border-radius:6px; padding:8px; box-sizing:border-box; font-size:12px;">
+            <option value="">Episode A</option>
+          </select>
+          <select id="cmp-ep-b" disabled style="flex:1; min-width:0; background:#111; color:#eee; border:1px solid #262b33; border-radius:6px; padding:8px; box-sizing:border-box; font-size:12px;">
+            <option value="">Episode B</option>
+          </select>
+        </div>
+        <button id="cmp-run" disabled style="background:#7e4ea0; color:#fff; border:none; border-radius:6px; padding:8px; cursor:pointer; font-weight:600; opacity:.5;">
           Compare
         </button>
         <div id="cmp-log" style="font-family:monospace; font-size:11px; color:#8a8f98; max-height:70px; overflow-y:auto; line-height:1.5; white-space:pre-wrap;"></div>
@@ -2060,6 +2071,8 @@ ${sections}
     document.getElementById("kfl-close").onclick = () => panel.remove();
     setupDrag(document.getElementById("kfl-drag-handle"), panel);
 
+    let cmpShowData = null; // persists across Load Show -> Compare within this render
+
     const cmpLog = (msg) => {
       const el = document.getElementById("cmp-log");
       if (!el) return;
@@ -2076,50 +2089,136 @@ ${sections}
       renderPanel();
     };
 
-    document.getElementById("cmp-run").onclick = async () => {
-      const show = document.getElementById("cmp-show").value.trim();
-      const epA = document.getElementById("cmp-ep-a").value.trim();
-      const epB = document.getElementById("cmp-ep-b").value.trim();
-      if (!show || !epA || !epB) { cmpLog("Fill in the show and both episode numbers first."); return; }
+    document.getElementById("cmp-show").onblur = () => {
+      setTimeout(() => {
+        const dropdown = document.getElementById("cmp-show-dropdown");
+        if (dropdown) dropdown.style.display = "none";
+      }, 150);
+    };
 
+    async function loadShow(identifier) {
       document.getElementById("cmp-log").textContent = "";
       document.getElementById("cmp-results").innerHTML = "";
+      document.getElementById("cmp-show-status").textContent = "";
+      document.getElementById("cmp-load-show").disabled = true;
+      const epASelect = document.getElementById("cmp-ep-a");
+      const epBSelect = document.getElementById("cmp-ep-b");
+      epASelect.disabled = true;
+      epBSelect.disabled = true;
+      epASelect.innerHTML = `<option value="">Episode A</option>`;
+      epBSelect.innerHTML = `<option value="">Episode B</option>`;
       document.getElementById("cmp-run").disabled = true;
-      document.querySelectorAll(".kfl-mode-switch-link").forEach((el) => { el.style.pointerEvents = "none"; el.style.opacity = "0.4"; });
+      document.getElementById("cmp-run").style.opacity = "0.5";
 
       try {
-        cmpLog(`Fetching show data...`);
-        const data = await fetchShowStaffData(show);
-        cmpLog(`Loaded "${data.title || show}".`);
+        cmpLog("Fetching show data...");
+        cmpShowData = await fetchShowStaffData(identifier);
+        const episodeMenus = (cmpShowData.menus || []).filter((m) => m.name !== "Overview");
+        if (episodeMenus.length === 0) throw new Error("No episodes found on this show's page.");
 
-        const menuA = findEpisodeMenu(data, epA);
-        const menuB = findEpisodeMenu(data, epB);
-        if (!menuA) { cmpLog(`Couldn't find episode "${epA}" on this show.`); return; }
-        if (!menuB) { cmpLog(`Couldn't find episode "${epB}" on this show.`); return; }
+        document.getElementById("cmp-show-status").textContent = `Loaded "${cmpShowData.title || identifier}" — ${episodeMenus.length} entries available.`;
+        cmpLog(`Loaded ${episodeMenus.length} episode/segment entries.`);
 
-        const staffA = flattenEpisodeStaff(menuA);
-        const staffB = flattenEpisodeStaff(menuB);
-        cmpLog(`Episode ${epA}: ${staffA.length} credited. Episode ${epB}: ${staffB.length} credited.`);
-
-        const shared = computeComparison(staffA, staffB);
-        cmpLog(`${shared.length} shared between both episodes.`);
-
-        const resultsEl = document.getElementById("cmp-results");
-        if (shared.length === 0) {
-          resultsEl.innerHTML = `<div style="color:#8a8f98; font-size:12px; padding:8px 0;">No overlap found.</div>`;
-        } else {
-          resultsEl.innerHTML = shared.map((s) => `
-            <div style="padding:8px 0; border-bottom:1px solid #262b33;">
-              <div style="font-weight:600; font-size:13px;">${esc(s.en || s.ja || "Unknown")}${s.ja && s.en ? `<span style="color:#8a8f98; font-weight:400; font-size:11px; margin-left:6px;">${esc(s.ja)}</span>` : ""}</div>
-              <div style="font-size:11px; color:#8a8f98; margin-top:3px; font-family:monospace;">Ep ${esc(epA)}: ${esc(s.rolesA.join(", "))} · Ep ${esc(epB)}: ${esc(s.rolesB.join(", "))}</div>
-            </div>
-          `).join("");
-        }
+        const optionsHtml = `<option value="">Select...</option>` + episodeMenus.map((m) => `<option value="${esc(m.name)}">${esc(m.name)}</option>`).join("");
+        epASelect.innerHTML = optionsHtml;
+        epBSelect.innerHTML = optionsHtml;
+        epASelect.disabled = false;
+        epBSelect.disabled = false;
       } catch (e) {
         cmpLog(`Error: ${e.message || e}`);
+        document.getElementById("cmp-show-status").textContent = "";
       } finally {
-        document.getElementById("cmp-run").disabled = false;
-        document.querySelectorAll(".kfl-mode-switch-link").forEach((el) => { el.style.pointerEvents = ""; el.style.opacity = ""; });
+        document.getElementById("cmp-load-show").disabled = false;
+      }
+    }
+
+    document.getElementById("cmp-load-show").onclick = () => {
+      const show = document.getElementById("cmp-show").value.trim();
+      if (!show) { cmpLog("Enter a show name, URL, or slug first."); return; }
+      document.getElementById("cmp-show-dropdown").style.display = "none";
+      loadShow(show);
+    };
+
+    // Live search-as-you-type -- reuses the SAME /api/search/ endpoint
+    // already used for staff, since KeyFrame's search bar returns both
+    // staff ("staff" key) and shows ("stafflists" key) from one call.
+    let cmpSearchTimer = null;
+    document.getElementById("cmp-show").oninput = () => {
+      clearTimeout(cmpSearchTimer);
+      const q = document.getElementById("cmp-show").value.trim();
+      const dropdown = document.getElementById("cmp-show-dropdown");
+      if (q.length < 2) { dropdown.style.display = "none"; dropdown.innerHTML = ""; return; }
+      cmpSearchTimer = setTimeout(async () => {
+        try {
+          const res = await fetch(`/api/search/?q=${encodeURIComponent(q)}&type=all`, { credentials: "include" });
+          const body = res.ok ? await res.json() : null;
+          const shows = (body && body.stafflists) || [];
+          if (shows.length === 0) { dropdown.style.display = "none"; dropdown.innerHTML = ""; return; }
+          dropdown.innerHTML = shows.slice(0, 8).map((s) => `
+            <div class="cmp-show-option" data-slug="${esc(s.slug)}" data-name="${esc(s.name)}"
+                 style="display:flex; align-items:center; gap:8px; padding:6px 8px; cursor:pointer;">
+              ${s.kv ? `<img src="${esc(s.kv)}" style="width:26px; height:36px; object-fit:cover; border-radius:3px; flex-shrink:0;">` : `<div style="width:26px; height:36px; flex-shrink:0; background:#1c2028; border-radius:3px;"></div>`}
+              <div style="min-width:0; flex:1;">
+                <div style="font-size:12px; font-weight:600; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">${esc(s.name)}</div>
+                <div style="font-size:10px; color:#8a8f98;">${esc(s.seasonYear ?? "")}</div>
+              </div>
+            </div>
+          `).join("");
+          dropdown.style.display = "block";
+          dropdown.querySelectorAll(".cmp-show-option").forEach((opt) => {
+            opt.onmouseenter = () => { opt.style.background = "#1c2028"; };
+            opt.onmouseleave = () => { opt.style.background = ""; };
+            opt.onclick = () => {
+              document.getElementById("cmp-show").value = opt.dataset.name;
+              dropdown.style.display = "none";
+              dropdown.innerHTML = "";
+              loadShow(opt.dataset.slug);
+            };
+          });
+        } catch (e) {
+          // silently ignore -- live search failing shouldn't block manual URL/slug entry
+        }
+      }, 300);
+    };
+
+    const maybeEnableRun = () => {
+      const epA = document.getElementById("cmp-ep-a").value;
+      const epB = document.getElementById("cmp-ep-b").value;
+      const runBtn = document.getElementById("cmp-run");
+      const ready = !!(cmpShowData && epA && epB);
+      runBtn.disabled = !ready;
+      runBtn.style.opacity = ready ? "1" : "0.5";
+    };
+    document.getElementById("cmp-ep-a").onchange = maybeEnableRun;
+    document.getElementById("cmp-ep-b").onchange = maybeEnableRun;
+
+    document.getElementById("cmp-run").onclick = () => {
+      const epA = document.getElementById("cmp-ep-a").value;
+      const epB = document.getElementById("cmp-ep-b").value;
+      if (!cmpShowData || !epA || !epB) return;
+      if (epA === epB) { cmpLog("Pick two different episodes."); return; }
+
+      document.getElementById("cmp-results").innerHTML = "";
+
+      const menuA = (cmpShowData.menus || []).find((m) => m.name === epA);
+      const menuB = (cmpShowData.menus || []).find((m) => m.name === epB);
+      const staffA = flattenEpisodeStaff(menuA);
+      const staffB = flattenEpisodeStaff(menuB);
+      cmpLog(`${epA}: ${staffA.length} credited. ${epB}: ${staffB.length} credited.`);
+
+      const shared = computeComparison(staffA, staffB);
+      cmpLog(`${shared.length} shared between both.`);
+
+      const resultsEl = document.getElementById("cmp-results");
+      if (shared.length === 0) {
+        resultsEl.innerHTML = `<div style="color:#8a8f98; font-size:12px; padding:8px 0;">No overlap found.</div>`;
+      } else {
+        resultsEl.innerHTML = shared.map((s) => `
+          <div style="padding:8px 0; border-bottom:1px solid #262b33;">
+            <div style="font-weight:600; font-size:13px;">${esc(s.en || s.ja || "Unknown")}${s.ja && s.en ? `<span style="color:#8a8f98; font-weight:400; font-size:11px; margin-left:6px;">${esc(s.ja)}</span>` : ""}</div>
+            <div style="font-size:11px; color:#8a8f98; margin-top:3px; font-family:monospace;">${esc(epA)}: ${esc(s.rolesA.join(", "))} · ${esc(epB)}: ${esc(s.rolesB.join(", "))}</div>
+          </div>
+        `).join("");
       }
     };
   }
