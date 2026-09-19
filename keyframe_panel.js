@@ -533,11 +533,11 @@
         .role-section { border-bottom:1px solid var(--line); }
         .role-section:last-child { border-bottom:none; }
         .role-head {
-          padding:12px 22px; display:flex; align-items:center; gap:10px; cursor:pointer; user-select:none;
+          padding:12px 22px; display:flex; align-items:center; gap:10px; cursor:pointer;
           position:sticky; top:0; z-index:5; background:var(--panel);
         }
         .role-head:hover { background:var(--panel-2); }
-        .role-arrow { color:var(--amber); font-size:11px; transition:transform .15s ease; width:10px; flex-shrink:0; }
+        .role-arrow { color:var(--amber); font-size:11px; transition:transform .15s ease; width:10px; flex-shrink:0; user-select:none; }
         .role-section.open .role-arrow { transform: rotate(90deg); }
         .role-title { font-weight:600; font-size:14px; flex:1; }
         .role-count { font-family:'JetBrains Mono',monospace; font-size:11px; color:var(--amber); background:rgba(245,166,35,.1); padding:2px 8px; border-radius:20px; }
@@ -579,11 +579,11 @@
         .staff-person { border-bottom:1px solid var(--line); }
         .staff-person:last-child { border-bottom:none; }
         .staff-person-row {
-          padding:12px 20px; display:flex; align-items:center; gap:10px; cursor:pointer; user-select:none;
+          padding:12px 20px; display:flex; align-items:center; gap:10px; cursor:pointer;
           position:sticky; top:0; z-index:6; background:var(--panel);
         }
         .staff-person-row:hover { background:var(--panel-2); }
-        .staff-arrow { color:var(--amber); font-size:11px; width:10px; flex-shrink:0; transition:transform .15s ease; }
+        .staff-arrow { color:var(--amber); font-size:11px; width:10px; flex-shrink:0; transition:transform .15s ease; user-select:none; }
         .staff-person.open .staff-arrow { transform:rotate(90deg); }
         .staff-name { font-family:'Space Grotesk',sans-serif; font-weight:700; font-size:14px; }
         .staff-name .ja { font-family:'Inter',sans-serif; font-weight:400; color:var(--muted); font-size:12.5px; margin-left:8px; }
@@ -1400,9 +1400,9 @@ body{margin:0;background:var(--bg);color:var(--text);font-family:Inter,sans-seri
 .staff-list{background:var(--panel);border:1px solid var(--line);border-radius:10px;overflow:hidden;}
 .staff-person{border-bottom:1px solid var(--line);}
 .staff-person:last-child{border-bottom:none;}
-.staff-person-row{padding:12px 20px;display:flex;align-items:center;gap:10px;cursor:pointer;user-select:none;position:sticky;top:0;z-index:6;background:var(--panel);}
+.staff-person-row{padding:12px 20px;display:flex;align-items:center;gap:10px;cursor:pointer;position:sticky;top:0;z-index:6;background:var(--panel);}
 .staff-person-row:hover{background:var(--panel-2);}
-.staff-arrow{color:var(--amber);font-size:11px;width:10px;flex-shrink:0;transition:transform .15s ease;}
+.staff-arrow{color:var(--amber);font-size:11px;width:10px;flex-shrink:0;transition:transform .15s ease;user-select:none;}
 .staff-person.open .staff-arrow{transform:rotate(90deg);}
 .staff-name{font-family:'Space Grotesk',sans-serif;font-weight:700;font-size:14px;}
 .staff-name .ja{font-family:'Inter',sans-serif;font-weight:400;color:var(--muted);font-size:12.5px;margin-left:8px;}
@@ -1414,9 +1414,9 @@ body{margin:0;background:var(--bg);color:var(--text);font-family:Inter,sans-seri
 .sakuga-link:hover{color:var(--cyan);opacity:1;text-decoration:underline;}
 .role-section{border-bottom:1px solid var(--line);}
 .role-section:last-child{border-bottom:none;}
-.role-head{padding:12px 22px;display:flex;align-items:center;gap:10px;cursor:pointer;user-select:none;position:sticky;top:0;z-index:5;background:var(--panel);}
+.role-head{padding:12px 22px;display:flex;align-items:center;gap:10px;cursor:pointer;position:sticky;top:0;z-index:5;background:var(--panel);}
 .role-head:hover{background:var(--panel-2);}
-.role-arrow{color:var(--amber);font-size:11px;transition:transform .15s ease;width:10px;flex-shrink:0;}
+.role-arrow{color:var(--amber);font-size:11px;transition:transform .15s ease;width:10px;flex-shrink:0;user-select:none;}
 .role-section.open .role-arrow{transform:rotate(90deg);}
 .role-title{font-weight:600;font-size:14px;flex:1;}
 .role-count{font-family:'JetBrains Mono',monospace;font-size:11px;color:var(--amber);background:rgba(245,166,35,.1);padding:2px 8px;border-radius:20px;}
