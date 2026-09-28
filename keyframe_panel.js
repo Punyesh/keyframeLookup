@@ -318,14 +318,59 @@
   }
   // ---------- results page builder ----------
   let uid = 0;
-  // No automatic verification -- Sakugabooru's API blocks cross-origin
-  // requests from this site (confirmed live), so this just links to their
-  // own artist search page. You find out by clicking; nothing here claims
-  // to know in advance whether a page exists.
-  function sakugabooruSearchUrl(name) {
-    const tagified = (name || "").trim().toLowerCase().replace(/\s+/g, "_");
-    return `https://www.sakugabooru.com/post?tags=${encodeURIComponent(tagified)}`;
+  // Sakugabooru's own API blocks cross-origin requests from this site
+  // (confirmed live), so the base link is always just their artist search
+  // page -- that part never depended on JS working. On top of that, a
+  // small Cloudflare Worker proxy (server-to-server, no CORS involved)
+  // lets the "View as Page" outputs check in the background whether a tag
+  // actually has posts, and upgrade the link's label once it knows. If
+  // the worker is unreachable or errors, the link silently stays in its
+  // default state and still works as a plain link.
+  const SAKUGA_WORKER_URL = "https://keyframe-sakuga-check.keylookup.workers.dev";
+
+  function sakugaTag(name) {
+    return (name || "").trim().toLowerCase().replace(/\s+/g, "_");
   }
+
+  function sakugabooruSearchUrl(name) {
+    return `https://www.sakugabooru.com/post?tags=${encodeURIComponent(sakugaTag(name))}`;
+  }
+
+  // Embedded verbatim into every "View as Page" output's <script> block.
+  // Walks any .sakuga-link elements carrying a data-sakuga-tag, checks each
+  // one against the Worker with limited concurrency (so a big batch of
+  // names doesn't fire dozens of requests at once), and swaps in a
+  // found/not-found label as answers come back.
+  const SAKUGA_CHECK_SCRIPT = `
+    (function () {
+      var WORKER_URL = ${JSON.stringify(SAKUGA_WORKER_URL)};
+      var CONCURRENCY = 4;
+      var links = Array.prototype.slice.call(document.querySelectorAll(".sakuga-link[data-sakuga-tag]"));
+      var i = 0;
+      function next() {
+        if (i >= links.length) return;
+        var link = links[i++];
+        var tag = link.dataset.sakugaTag;
+        link.dataset.sakugaStatus = "checking";
+        fetch(WORKER_URL + "?tag=" + encodeURIComponent(tag))
+          .then(function (res) { return res.json(); })
+          .then(function (data) {
+            if (data && data.found) {
+              link.dataset.sakugaStatus = "found";
+              link.textContent = "Sakugabooru ↗";
+            } else {
+              link.dataset.sakugaStatus = "not-found";
+              link.textContent = "No Sakugabooru posts";
+            }
+          })
+          .catch(function () {
+            link.removeAttribute("data-sakuga-status");
+          })
+          .then(next);
+      }
+      for (var c = 0; c < CONCURRENCY; c++) next();
+    })();
+  `;
 
   function renderPerson(r) {
     if (!r.found) {
@@ -374,7 +419,7 @@
           <div class="person-name">${esc(r.nameEn || r.query)}${r.nameJa ? `<span class="ja">${esc(r.nameJa)}</span>` : ""}</div>
           <div class="badges">${jobs}</div>
           ${studiosHtml}
-          <a class="sakuga-link" href="${sakugabooruSearchUrl(r.nameEn || r.query)}" target="_blank" rel="noopener">Search Sakugabooru ↗</a>
+          <a class="sakuga-link" data-sakuga-tag="${esc(sakugaTag(r.nameEn || r.query))}" href="${sakugabooruSearchUrl(r.nameEn || r.query)}" target="_blank" rel="noopener">Search Sakugabooru ↗</a>
         </div>
         <div>${rolesHtml || '<div style="padding:16px 22px; color:var(--muted); font-size:13px;">No credits listed.</div>'}</div>
       </div>
@@ -431,7 +476,7 @@
             <div class="person-name">${esc(r.nameEn || r.query)}${r.nameJa ? `<span class="ja">${esc(r.nameJa)}</span>` : ""}</div>
             <div class="badges">${jobs}</div>
             ${studiosHtml}
-            <a class="sakuga-link" href="${sakugabooruSearchUrl(r.nameEn || r.query)}" target="_blank" rel="noopener">Search Sakugabooru ↗</a>
+            <a class="sakuga-link" data-sakuga-tag="${esc(sakugaTag(r.nameEn || r.query))}" href="${sakugabooruSearchUrl(r.nameEn || r.query)}" target="_blank" rel="noopener">Search Sakugabooru ↗</a>
           </div>
           ${toggleLink}
         </div>
@@ -529,6 +574,9 @@
         .studio-affiliations { font-family:'JetBrains Mono',monospace; font-size:11px; color:var(--muted); margin-top:8px; }
         .sakuga-link { display:inline-block; font-size:10.5px; color:var(--muted); text-decoration:none; margin-top:6px; opacity:.7; }
         .sakuga-link:hover { color:var(--cyan); opacity:1; text-decoration:underline; }
+        .sakuga-link[data-sakuga-status="checking"] { font-style:italic; opacity:.5; }
+        .sakuga-link[data-sakuga-status="found"] { color:var(--cyan); opacity:1; }
+        .sakuga-link[data-sakuga-status="not-found"] { opacity:.4; text-decoration:line-through; }
         .badge { font-size:11px; padding:4px 9px; border-radius:20px; background:var(--panel-2); border:1px solid var(--line); color:var(--cyan); font-family:'JetBrains Mono',monospace; }
         .role-section { border-bottom:1px solid var(--line); }
         .role-section:last-child { border-bottom:none; }
@@ -741,6 +789,7 @@
             ta.select();
           };
         </script>
+        <script>${SAKUGA_CHECK_SCRIPT}</script>
       </body></html>
     `;
   }
@@ -1329,7 +1378,7 @@
       const pid = `orgp${uid++}`;
       const roleData = result.roles || {};
       const roleNames = Object.keys(roleData).sort((a, b) => roleData[b].length - roleData[a].length);
-      const sakugaLinkHtml = `<a class="sakuga-link" href="${sakugabooruSearchUrl(result.nameEn || displayed)}" target="_blank" rel="noopener" onclick="event.stopPropagation();">Search Sakugabooru ↗</a>`;
+      const sakugaLinkHtml = `<a class="sakuga-link" data-sakuga-tag="${esc(sakugaTag(result.nameEn || displayed))}" href="${sakugabooruSearchUrl(result.nameEn || displayed)}" target="_blank" rel="noopener" onclick="event.stopPropagation();">Search Sakugabooru ↗</a>`;
       const detailHtml = roleNames.length === 0
         ? `<div class="staff-empty">No credits listed.</div>`
         : roleNames.map((roleName) => {
@@ -1412,6 +1461,9 @@ body{margin:0;background:var(--bg);color:var(--text);font-family:Inter,sans-seri
 .staff-empty{color:var(--muted);font-size:12.5px;padding:8px 20px 16px 42px;}
 .sakuga-link{display:inline-block;font-size:10.5px;color:var(--muted);text-decoration:none;opacity:.7;margin-left:auto;padding-left:10px;}
 .sakuga-link:hover{color:var(--cyan);opacity:1;text-decoration:underline;}
+.sakuga-link[data-sakuga-status="checking"]{font-style:italic;opacity:.5;}
+.sakuga-link[data-sakuga-status="found"]{color:var(--cyan);opacity:1;}
+.sakuga-link[data-sakuga-status="not-found"]{opacity:.4;text-decoration:line-through;}
 .role-section{border-bottom:1px solid var(--line);}
 .role-section:last-child{border-bottom:none;}
 .role-head{padding:12px 22px;display:flex;align-items:center;gap:10px;cursor:pointer;position:sticky;top:0;z-index:5;background:var(--panel);}
@@ -1436,7 +1488,9 @@ body{margin:0;background:var(--bg);color:var(--text);font-family:Inter,sans-seri
 <div class="header"><div class="mark"></div><div class="title">Credit Sheet</div></div>
 ${sections}
 <div class="footer">Verified via <a href="https://keyframe-staff-list.com" target="_blank">KeyFrame Staff List</a></div>
-</div></body></html>`;
+</div>
+<script>${SAKUGA_CHECK_SCRIPT}</script>
+</body></html>`;
   }
 
   let kflOrgData = null;
