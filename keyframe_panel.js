@@ -337,38 +337,101 @@
   }
 
   // Embedded verbatim into every "View as Page" output's <script> block.
-  // Walks any .sakuga-link elements carrying a data-sakuga-tag, checks each
-  // one against the Worker with limited concurrency (so a big batch of
-  // names doesn't fire dozens of requests at once), and swaps in a
-  // found/not-found label as answers come back.
+  // Walks any .sakuga-link elements carrying a data-sakuga-tag and resolves
+  // each one's found/not-found state in two cheap layers before it ever
+  // costs a Worker request:
+  //   1. localStorage, keyed per tag with a 24h TTL -- once a name's been
+  //      checked on this machine, opening another results page for it
+  //      (which happens constantly, since the same staff recur across
+  //      episodes) costs nothing at all.
+  //   2. A single batched POST per up-to-50 remaining tags, instead of one
+  //      request per name -- keeps this well inside the Worker's free-tier
+  //      request quota even for large lookups.
+  // If the Worker is unreachable or errors, affected links just quietly
+  // drop back to their default state and still work as plain links.
   const SAKUGA_CHECK_SCRIPT = `
     (function () {
       var WORKER_URL = ${JSON.stringify(SAKUGA_WORKER_URL)};
-      var CONCURRENCY = 4;
-      var links = Array.prototype.slice.call(document.querySelectorAll(".sakuga-link[data-sakuga-tag]"));
-      var i = 0;
-      function next() {
-        if (i >= links.length) return;
-        var link = links[i++];
+      var CACHE_TTL_MS = 24 * 60 * 60 * 1000;
+      var CACHE_PREFIX = "kfl_sakuga_";
+      var BATCH_SIZE = 50; // mirrors the Worker's own per-request subrequest cap
+
+      function readCache(tag) {
+        try {
+          var raw = localStorage.getItem(CACHE_PREFIX + tag);
+          if (!raw) return null;
+          var entry = JSON.parse(raw);
+          if (!entry || (Date.now() - entry.ts) > CACHE_TTL_MS) return null;
+          return entry;
+        } catch (e) { return null; }
+      }
+
+      function writeCache(tag, found) {
+        try {
+          localStorage.setItem(CACHE_PREFIX + tag, JSON.stringify({ found: found, ts: Date.now() }));
+        } catch (e) { /* private mode / storage disabled -- just skip caching */ }
+      }
+
+      function applyStatus(linksByTag, tag, found) {
+        (linksByTag[tag] || []).forEach(function (link) {
+          link.dataset.sakugaStatus = found ? "found" : "not-found";
+          link.textContent = found ? "Sakugabooru ↗" : "No Sakugabooru posts";
+        });
+      }
+
+      function clearStatus(linksByTag, tag) {
+        (linksByTag[tag] || []).forEach(function (link) {
+          link.removeAttribute("data-sakuga-status");
+        });
+      }
+
+      function chunk(arr, size) {
+        var out = [];
+        for (var i = 0; i < arr.length; i += size) out.push(arr.slice(i, i + size));
+        return out;
+      }
+
+      var linksByTag = {};
+      Array.prototype.forEach.call(document.querySelectorAll(".sakuga-link[data-sakuga-tag]"), function (link) {
         var tag = link.dataset.sakugaTag;
-        link.dataset.sakugaStatus = "checking";
-        fetch(WORKER_URL + "?tag=" + encodeURIComponent(tag))
+        if (!linksByTag[tag]) linksByTag[tag] = [];
+        linksByTag[tag].push(link);
+      });
+
+      var pending = [];
+      Object.keys(linksByTag).forEach(function (tag) {
+        var cached = readCache(tag);
+        if (cached) {
+          applyStatus(linksByTag, tag, cached.found);
+        } else {
+          linksByTag[tag].forEach(function (link) { link.dataset.sakugaStatus = "checking"; });
+          pending.push(tag);
+        }
+      });
+
+      chunk(pending, BATCH_SIZE).forEach(function (tags) {
+        fetch(WORKER_URL, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ tags: tags }),
+        })
           .then(function (res) { return res.json(); })
           .then(function (data) {
-            if (data && data.found) {
-              link.dataset.sakugaStatus = "found";
-              link.textContent = "Sakugabooru ↗";
-            } else {
-              link.dataset.sakugaStatus = "not-found";
-              link.textContent = "No Sakugabooru posts";
-            }
+            var results = (data && data.results) || {};
+            tags.forEach(function (tag) {
+              var r = results[tag];
+              if (r) {
+                writeCache(tag, !!r.found);
+                applyStatus(linksByTag, tag, !!r.found);
+              } else {
+                clearStatus(linksByTag, tag);
+              }
+            });
           })
           .catch(function () {
-            link.removeAttribute("data-sakuga-status");
-          })
-          .then(next);
-      }
-      for (var c = 0; c < CONCURRENCY; c++) next();
+            tags.forEach(function (tag) { clearStatus(linksByTag, tag); });
+          });
+      });
     })();
   `;
 
