@@ -17,6 +17,13 @@
 
   let kflMode = "lookup"; // "lookup" | "organize" | "compare"
 
+  // Testing convenience: when on, every disambiguation prompt (Lookup's
+  // promptForMatch and Organizer's promptForOrgMatch) auto-resolves to the
+  // first candidate instead of pausing for a manual pick. Off by default --
+  // this exists purely to speed up running large batches through during
+  // testing, not as a normal-use setting, so it's never persisted.
+  let kflAutoFirstMatch = false;
+
   // ---------- custom role dictionary (user-editable, persisted) ----------
   // Lets the user add their own role terms/abbreviations without needing a
   // code change every time an unrecognized credit shows up. Stored in
@@ -252,6 +259,7 @@
   // Shows candidate buttons in the panel and resolves with the chosen match
   // (or null if the user clicks Skip). Pauses the run loop until answered.
   function promptForMatch(name, matches) {
+    if (kflAutoFirstMatch) return Promise.resolve(matches[0]);
     return new Promise((resolve) => {
       const box = document.getElementById("kfl-select");
       box.style.display = "flex";
@@ -1130,6 +1138,7 @@
   // Pauses the verify loop until answered -- same pattern as the lookup
   // mode's promptForMatch, just targeting the organizer's own box.
   function promptForOrgMatch(name, matches) {
+    if (kflAutoFirstMatch) return Promise.resolve(matches[0]);
     return new Promise((resolve) => {
       const box = document.getElementById("org-select");
       box.style.display = "flex";
@@ -1192,6 +1201,7 @@
   }
 
   function promptSplitConfirm(original, parts) {
+    if (kflAutoFirstMatch) return Promise.resolve(true);
     return new Promise((resolve) => {
       const box = document.getElementById("org-select");
       box.style.display = "flex";
@@ -1881,6 +1891,10 @@ body{margin:0;background:var(--bg);color:var(--text);font-family:Inter,sans-seri
         <button id="kfl-run" style="background:#7e4ea0; color:#fff; border:none; border-radius:6px; padding:8px; cursor:pointer; font-weight:600;">
           Run lookup
         </button>
+        <label style="display:flex; align-items:center; gap:6px; font-size:11px; color:#8a8f98; cursor:pointer;">
+          <input type="checkbox" id="kfl-auto-first" ${kflAutoFirstMatch ? "checked" : ""} style="cursor:pointer;">
+          Auto-pick first match (testing — skips disambiguation prompts)
+        </label>
         <div style="display:flex; justify-content:space-between; align-items:center;">
           <div id="kfl-cache-count" style="font-size:11px; color:#8a8f98;"></div>
           <span id="kfl-clear-cache" style="font-size:11px; color:#8a8f98; cursor:pointer; text-decoration:underline;">Clear cache</span>
@@ -1944,6 +1958,10 @@ body{margin:0;background:var(--bg);color:var(--text);font-family:Inter,sans-seri
         <button id="org-run" style="background:#7e4ea0; color:#fff; border:none; border-radius:6px; padding:8px; cursor:pointer; font-weight:600;">
           Parse &amp; Verify
         </button>
+        <label style="display:flex; align-items:center; gap:6px; font-size:11px; color:#8a8f98; cursor:pointer;">
+          <input type="checkbox" id="org-auto-first" ${kflAutoFirstMatch ? "checked" : ""} style="cursor:pointer;">
+          Auto-pick first match (testing — skips disambiguation prompts)
+        </label>
         <div id="org-log" style="font-family:monospace; font-size:11px; color:#8a8f98; max-height:90px; overflow-y:auto; line-height:1.5; white-space:pre-wrap;"></div>
         <div id="org-select" style="display:none; flex-direction:column; gap:6px; background:#111; border:1px solid #262b33; border-radius:6px; padding:8px; max-height:180px; overflow-y:auto;"></div>
         <div style="text-align:center; margin-top:2px; display:flex; justify-content:center; gap:12px; flex-wrap:wrap;">
@@ -2026,6 +2044,10 @@ body{margin:0;background:var(--bg);color:var(--text);font-family:Inter,sans-seri
       for (const k in cache) delete cache[k];
       updateCacheCount();
       log("Cache cleared.");
+    };
+
+    document.getElementById("kfl-auto-first").onchange = (e) => {
+      kflAutoFirstMatch = e.target.checked;
     };
 
     document.getElementById("kfl-mode-switch-organize").onclick = () => {
@@ -2153,6 +2175,10 @@ body{margin:0;background:var(--bg);color:var(--text);font-family:Inter,sans-seri
       if (!el) return;
       el.textContent += (el.textContent ? "\n" : "") + msg;
       el.scrollTop = el.scrollHeight;
+    };
+
+    document.getElementById("org-auto-first").onchange = (e) => {
+      kflAutoFirstMatch = e.target.checked;
     };
 
     document.getElementById("kfl-mode-switch-lookup").onclick = () => {
