@@ -361,7 +361,11 @@
     (function () {
       var WORKER_URL = ${JSON.stringify(SAKUGA_WORKER_URL)};
       var CACHE_TTL_MS = 24 * 60 * 60 * 1000;
-      var CACHE_PREFIX = "kfl_sakuga_";
+      // v2: bumped when the count field was added, so pre-existing cache
+      // entries (which only ever stored {found, ts}, no count) are never
+      // read as if they were the new shape -- they just miss and get
+      // re-checked live instead of showing a bogus "(undefined)" count.
+      var CACHE_PREFIX = "kfl_sakuga_v2_";
       var BATCH_SIZE = 50; // mirrors the Worker's own per-request subrequest cap
 
       function readCache(tag) {
@@ -382,8 +386,11 @@
 
       function labelFor(found, count, capped) {
         if (!found) return "No Sakugabooru posts";
-        if (capped) return "Sakugabooru ↗ (" + count + "+)";
-        return "Sakugabooru ↗ (" + count + ")";
+        // Defensive fallback: a count that isn't a real number (e.g. a
+        // stale cache entry from before counts existed) shows the plain
+        // label instead of literally printing "(undefined)".
+        if (typeof count !== "number" || isNaN(count)) return "Sakugabooru ↗";
+        return capped ? "Sakugabooru ↗ (" + count + "+)" : "Sakugabooru ↗ (" + count + ")";
       }
 
       function applyStatus(linksByTag, tag, found, count, capped) {
