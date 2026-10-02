@@ -374,16 +374,22 @@
         } catch (e) { return null; }
       }
 
-      function writeCache(tag, found) {
+      function writeCache(tag, found, count, capped) {
         try {
-          localStorage.setItem(CACHE_PREFIX + tag, JSON.stringify({ found: found, ts: Date.now() }));
+          localStorage.setItem(CACHE_PREFIX + tag, JSON.stringify({ found: found, count: count || 0, capped: !!capped, ts: Date.now() }));
         } catch (e) { /* private mode / storage disabled -- just skip caching */ }
       }
 
-      function applyStatus(linksByTag, tag, found) {
+      function labelFor(found, count, capped) {
+        if (!found) return "No Sakugabooru posts";
+        if (capped) return "Sakugabooru ↗ (" + count + "+)";
+        return "Sakugabooru ↗ (" + count + ")";
+      }
+
+      function applyStatus(linksByTag, tag, found, count, capped) {
         (linksByTag[tag] || []).forEach(function (link) {
           link.dataset.sakugaStatus = found ? "found" : "not-found";
-          link.textContent = found ? "Sakugabooru ↗" : "No Sakugabooru posts";
+          link.textContent = labelFor(found, count, capped);
         });
       }
 
@@ -410,7 +416,7 @@
       Object.keys(linksByTag).forEach(function (tag) {
         var cached = readCache(tag);
         if (cached) {
-          applyStatus(linksByTag, tag, cached.found);
+          applyStatus(linksByTag, tag, cached.found, cached.count, cached.capped);
         } else {
           linksByTag[tag].forEach(function (link) { link.dataset.sakugaStatus = "checking"; });
           pending.push(tag);
@@ -429,8 +435,8 @@
             tags.forEach(function (tag) {
               var r = results[tag];
               if (r) {
-                writeCache(tag, !!r.found);
-                applyStatus(linksByTag, tag, !!r.found);
+                writeCache(tag, !!r.found, r.count, r.capped);
+                applyStatus(linksByTag, tag, !!r.found, r.count, r.capped);
               } else {
                 clearStatus(linksByTag, tag);
               }
