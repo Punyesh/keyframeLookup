@@ -428,15 +428,34 @@
         return out;
       }
 
-      // Common Japanese long-vowel romanization mismatch: KeyFrame may keep
-      // the long form ("Ryou", "Shuugo") while Sakugabooru's tags use the
-      // simplified form ("Ryo", "Shugo"), or vice versa isn't attempted here
-      // since the long form is the one that tends to carry extra letters a
-      // plain substring search wouldn't otherwise try. Returns null when the
-      // tag has neither pattern, so there's nothing worth retrying.
-      function altSpellingTag(tag) {
-        var alt = tag.replace(/ou/g, "o").replace(/uu/g, "u");
-        return alt !== tag ? alt : null;
+      // Common Japanese long-vowel romanization mismatch: one site may use
+      // the long form ("Ryou", "Shuugo") while the other uses the
+      // simplified form ("Ryo", "Shugo") -- and either site could be the
+      // one doing the simplifying, so both directions are tried:
+      //   - long -> short: every "ou" -> "o", every "uu" -> "u", all at
+      //     once -- collapsing a long-vowel pair is unambiguous wherever
+      //     one appears, so this is a single safe candidate.
+      //   - short -> long: a bare "o" or "u" *might* be a simplified long
+      //     vowel, but we don't know which one, and a real name very rarely
+      //     has more than one long vowel needing restoring at once -- so
+      //     each occurrence is tried as its own candidate, one at a time,
+      //     rather than guessing by doubling all of them together (which
+      //     would mangle any name with more than one "o"/"u" in it).
+      // Returns a de-duplicated array (possibly empty) of candidates other
+      // than the tag itself.
+      function altSpellingTags(tag) {
+        var candidates = [];
+        var longToShort = tag.replace(/ou/g, "o").replace(/uu/g, "u");
+        if (longToShort !== tag) candidates.push(longToShort);
+
+        for (var i = 0; i < tag.length; i++) {
+          var ch = tag[i];
+          if (ch !== "o" && ch !== "u") continue;
+          var doubled = ch === "o" ? "ou" : "uu";
+          var candidate = tag.slice(0, i) + doubled + tag.slice(i + 1);
+          if (candidates.indexOf(candidate) === -1) candidates.push(candidate);
+        }
+        return candidates;
       }
 
       var linksByTag = {};
@@ -467,6 +486,11 @@
           .then(function (data) { return (data && data.results) || {}; });
       }
 
+      // tag -> ordered list of alt spellings still to be tried for it in
+      // pass 2. Populated while pass 1 results come in (see below); read
+      // back once pass 1 is fully settled.
+      var originalCandidates = {};
+
       // Pass 1: check every pending tag's exact spelling. Anything that
       // comes back not-found but has a plausible alternate spelling is held
       // open (left "checking") rather than finalized, and queued for pass 2
@@ -474,7 +498,7 @@
       var firstPassChunks = chunk(pending, BATCH_SIZE).map(function (tags) {
         return postBatch(tags)
           .then(function (results) {
-            var retryMap = {}; // altTag -> [originalTags that should retry under it]
+            var retryTags = []; // alt spellings this chunk wants checked in pass 2
             tags.forEach(function (tag) {
               var r = results[tag];
               if (!r) { clearStatus(linksByTag, tag); return; }
@@ -483,63 +507,71 @@
                 applyStatus(linksByTag, tag, true, r.count, r.capped, tag);
                 return;
               }
-              var alt = altSpellingTag(tag);
-              if (alt) {
-                if (!retryMap[alt]) retryMap[alt] = [];
-                retryMap[alt].push(tag);
+              var alts = altSpellingTags(tag);
+              if (alts.length) {
+                originalCandidates[tag] = alts;
+                retryTags = retryTags.concat(alts);
               } else {
                 writeCache(tag, false, 0, false, tag);
                 applyStatus(linksByTag, tag, false, 0, false, tag);
               }
             });
-            return retryMap;
+            return retryTags;
           })
           .catch(function () {
             tags.forEach(function (tag) { clearStatus(linksByTag, tag); });
-            return {};
+            return [];
           });
       });
 
-      // Pass 2: once every pass-1 chunk has settled, batch up the unique
-      // alternate-spelling tags (several original names can share one alt
-      // spelling) and check those. A hit writes back onto the *original*
-      // tag's cache entry and link, pointed at the alt spelling's URL; a
-      // miss finalizes the original tag as not-found, same as an ordinary
-      // exact-match miss would.
-      Promise.all(firstPassChunks).then(function (retryMaps) {
-        var merged = {};
-        retryMaps.forEach(function (rm) {
-          Object.keys(rm).forEach(function (alt) {
-            if (!merged[alt]) merged[alt] = [];
-            merged[alt] = merged[alt].concat(rm[alt]);
-          });
+      // Pass 2: once every pass-1 chunk has settled, batch up every unique
+      // alternate spelling (several original names, and both directions of
+      // one name, can land on the same candidate) and check those in one
+      // more set of batches. Combining every chunk's results before
+      // resolving originals means a tag's two candidates can safely land in
+      // different chunks without a race.
+      Promise.all(firstPassChunks).then(function (retryTagLists) {
+        var altTags = [];
+        retryTagLists.forEach(function (list) {
+          list.forEach(function (alt) { if (altTags.indexOf(alt) === -1) altTags.push(alt); });
         });
-
-        var altTags = Object.keys(merged);
         if (altTags.length === 0) return;
 
-        chunk(altTags, BATCH_SIZE).forEach(function (tags) {
-          postBatch(tags)
-            .then(function (results) {
-              tags.forEach(function (altTag) {
-                var originals = merged[altTag] || [];
-                var r = results[altTag];
-                originals.forEach(function (origTag) {
-                  if (r && r.found) {
-                    writeCache(origTag, true, r.count, r.capped, altTag);
-                    applyStatus(linksByTag, origTag, true, r.count, r.capped, altTag);
-                  } else {
-                    writeCache(origTag, false, 0, false, origTag);
-                    applyStatus(linksByTag, origTag, false, 0, false, origTag);
-                  }
-                });
-              });
-            })
-            .catch(function () {
-              tags.forEach(function (altTag) {
-                (merged[altTag] || []).forEach(function (origTag) { clearStatus(linksByTag, origTag); });
-              });
-            });
+        var altChunks = chunk(altTags, BATCH_SIZE).map(function (tags) {
+          return postBatch(tags).catch(function () { return {}; }); // {} => every tag in this chunk stays "unanswered"
+        });
+
+        Promise.all(altChunks).then(function (resultsList) {
+          var combined = {};
+          resultsList.forEach(function (results) {
+            Object.keys(results).forEach(function (k) { combined[k] = results[k]; });
+          });
+
+          Object.keys(originalCandidates).forEach(function (origTag) {
+            var candidates = originalCandidates[origTag];
+            var hit = null;
+            for (var i = 0; i < candidates.length; i++) {
+              var r = combined[candidates[i]];
+              if (r && r.found) { hit = { tag: candidates[i], r: r }; break; }
+            }
+            if (hit) {
+              writeCache(origTag, true, hit.r.count, hit.r.capped, hit.tag);
+              applyStatus(linksByTag, origTag, true, hit.r.count, hit.r.capped, hit.tag);
+              return;
+            }
+            // No candidate had posts. Only finalize as not-found once every
+            // candidate actually got an answer -- if one came from a chunk
+            // whose request failed outright, that's a network problem, not
+            // proof the name has no posts, so the link just reverts to
+            // plain/default instead of showing a false negative.
+            var allAnswered = candidates.every(function (c) { return combined[c] !== undefined; });
+            if (allAnswered) {
+              writeCache(origTag, false, 0, false, origTag);
+              applyStatus(linksByTag, origTag, false, 0, false, origTag);
+            } else {
+              clearStatus(linksByTag, origTag);
+            }
+          });
         });
       });
     })();
