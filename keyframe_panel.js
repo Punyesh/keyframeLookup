@@ -361,11 +361,11 @@
     (function () {
       var WORKER_URL = ${JSON.stringify(SAKUGA_WORKER_URL)};
       var CACHE_TTL_MS = 24 * 60 * 60 * 1000;
-      // v2: bumped when the count field was added, so pre-existing cache
-      // entries (which only ever stored {found, ts}, no count) are never
-      // read as if they were the new shape -- they just miss and get
-      // re-checked live instead of showing a bogus "(undefined)" count.
-      var CACHE_PREFIX = "kfl_sakuga_v2_";
+      // v3: bumped when matchedTag was added (a found result can now point
+      // at an alternate-spelling tag, not just the original one), so
+      // pre-existing entries -- which never stored matchedTag -- are never
+      // read as if they already carried it.
+      var CACHE_PREFIX = "kfl_sakuga_v3_";
       var BATCH_SIZE = 50; // mirrors the Worker's own per-request subrequest cap
 
       function readCache(tag) {
@@ -378,9 +378,12 @@
         } catch (e) { return null; }
       }
 
-      function writeCache(tag, found, count, capped) {
+      function writeCache(tag, found, count, capped, matchedTag) {
         try {
-          localStorage.setItem(CACHE_PREFIX + tag, JSON.stringify({ found: found, count: count || 0, capped: !!capped, ts: Date.now() }));
+          localStorage.setItem(CACHE_PREFIX + tag, JSON.stringify({
+            found: found, count: count || 0, capped: !!capped,
+            matchedTag: matchedTag || tag, ts: Date.now(),
+          }));
         } catch (e) { /* private mode / storage disabled -- just skip caching */ }
       }
 
@@ -393,10 +396,23 @@
         return capped ? "Sakugabooru ↗ (" + count + "+)" : "Sakugabooru ↗ (" + count + ")";
       }
 
-      function applyStatus(linksByTag, tag, found, count, capped) {
+      function sakugaUrlFor(tag) {
+        return "https://www.sakugabooru.com/post?tags=" + encodeURIComponent(tag);
+      }
+
+      // matchedTag is the tag that actually had posts -- usually just the
+      // original tag itself, but when the exact spelling came back empty and an
+      // alternate-romanization retry (see altSpellingTag below) found posts
+      // instead, this points the link at that spelling so it actually leads
+      // somewhere useful.
+      function applyStatus(linksByTag, tag, found, count, capped, matchedTag) {
         (linksByTag[tag] || []).forEach(function (link) {
           link.dataset.sakugaStatus = found ? "found" : "not-found";
           link.textContent = labelFor(found, count, capped);
+          if (found && matchedTag && matchedTag !== tag) {
+            link.href = sakugaUrlFor(matchedTag);
+            link.title = "Found under alternate spelling: " + matchedTag;
+          }
         });
       }
 
@@ -412,6 +428,17 @@
         return out;
       }
 
+      // Common Japanese long-vowel romanization mismatch: KeyFrame may keep
+      // the long form ("Ryou", "Shuugo") while Sakugabooru's tags use the
+      // simplified form ("Ryo", "Shugo"), or vice versa isn't attempted here
+      // since the long form is the one that tends to carry extra letters a
+      // plain substring search wouldn't otherwise try. Returns null when the
+      // tag has neither pattern, so there's nothing worth retrying.
+      function altSpellingTag(tag) {
+        var alt = tag.replace(/ou/g, "o").replace(/uu/g, "u");
+        return alt !== tag ? alt : null;
+      }
+
       var linksByTag = {};
       Array.prototype.forEach.call(document.querySelectorAll(".sakuga-link[data-sakuga-tag]"), function (link) {
         var tag = link.dataset.sakugaTag;
@@ -423,35 +450,97 @@
       Object.keys(linksByTag).forEach(function (tag) {
         var cached = readCache(tag);
         if (cached) {
-          applyStatus(linksByTag, tag, cached.found, cached.count, cached.capped);
+          applyStatus(linksByTag, tag, cached.found, cached.count, cached.capped, cached.matchedTag);
         } else {
           linksByTag[tag].forEach(function (link) { link.dataset.sakugaStatus = "checking"; });
           pending.push(tag);
         }
       });
 
-      chunk(pending, BATCH_SIZE).forEach(function (tags) {
-        fetch(WORKER_URL, {
+      function postBatch(tags) {
+        return fetch(WORKER_URL, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ tags: tags }),
         })
           .then(function (res) { return res.json(); })
-          .then(function (data) {
-            var results = (data && data.results) || {};
+          .then(function (data) { return (data && data.results) || {}; });
+      }
+
+      // Pass 1: check every pending tag's exact spelling. Anything that
+      // comes back not-found but has a plausible alternate spelling is held
+      // open (left "checking") rather than finalized, and queued for pass 2
+      // instead of being declared missing on a single exact-match miss.
+      var firstPassChunks = chunk(pending, BATCH_SIZE).map(function (tags) {
+        return postBatch(tags)
+          .then(function (results) {
+            var retryMap = {}; // altTag -> [originalTags that should retry under it]
             tags.forEach(function (tag) {
               var r = results[tag];
-              if (r) {
-                writeCache(tag, !!r.found, r.count, r.capped);
-                applyStatus(linksByTag, tag, !!r.found, r.count, r.capped);
+              if (!r) { clearStatus(linksByTag, tag); return; }
+              if (r.found) {
+                writeCache(tag, true, r.count, r.capped, tag);
+                applyStatus(linksByTag, tag, true, r.count, r.capped, tag);
+                return;
+              }
+              var alt = altSpellingTag(tag);
+              if (alt) {
+                if (!retryMap[alt]) retryMap[alt] = [];
+                retryMap[alt].push(tag);
               } else {
-                clearStatus(linksByTag, tag);
+                writeCache(tag, false, 0, false, tag);
+                applyStatus(linksByTag, tag, false, 0, false, tag);
               }
             });
+            return retryMap;
           })
           .catch(function () {
             tags.forEach(function (tag) { clearStatus(linksByTag, tag); });
+            return {};
           });
+      });
+
+      // Pass 2: once every pass-1 chunk has settled, batch up the unique
+      // alternate-spelling tags (several original names can share one alt
+      // spelling) and check those. A hit writes back onto the *original*
+      // tag's cache entry and link, pointed at the alt spelling's URL; a
+      // miss finalizes the original tag as not-found, same as an ordinary
+      // exact-match miss would.
+      Promise.all(firstPassChunks).then(function (retryMaps) {
+        var merged = {};
+        retryMaps.forEach(function (rm) {
+          Object.keys(rm).forEach(function (alt) {
+            if (!merged[alt]) merged[alt] = [];
+            merged[alt] = merged[alt].concat(rm[alt]);
+          });
+        });
+
+        var altTags = Object.keys(merged);
+        if (altTags.length === 0) return;
+
+        chunk(altTags, BATCH_SIZE).forEach(function (tags) {
+          postBatch(tags)
+            .then(function (results) {
+              tags.forEach(function (altTag) {
+                var originals = merged[altTag] || [];
+                var r = results[altTag];
+                originals.forEach(function (origTag) {
+                  if (r && r.found) {
+                    writeCache(origTag, true, r.count, r.capped, altTag);
+                    applyStatus(linksByTag, origTag, true, r.count, r.capped, altTag);
+                  } else {
+                    writeCache(origTag, false, 0, false, origTag);
+                    applyStatus(linksByTag, origTag, false, 0, false, origTag);
+                  }
+                });
+              });
+            })
+            .catch(function () {
+              tags.forEach(function (altTag) {
+                (merged[altTag] || []).forEach(function (origTag) { clearStatus(linksByTag, origTag); });
+              });
+            });
+        });
       });
     })();
   `;
